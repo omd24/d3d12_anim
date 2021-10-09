@@ -5,6 +5,8 @@ VisualStudioVersion = 16.0.31702.278
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "keyframe_animation", "keyframe_animation\keyframe_animation.vcxproj", "{D15488A1-83A4-4D05-9D8C-59B88C4A642B}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "character_animation", "character_animation\character_animation.vcxproj", "{4DD7128B-348D-4AA4-BDA0-0E1646504DB6}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -21,6 +23,14 @@ Global
 		{D15488A1-83A4-4D05-9D8C-59B88C4A642B}.Release|x64.Build.0 = Release|x64
 		{D15488A1-83A4-4D05-9D8C-59B88C4A642B}.Release|x86.ActiveCfg = Release|Win32
 		{D15488A1-83A4-4D05-9D8C-59B88C4A642B}.Release|x86.Build.0 = Release|Win32
+		{4DD7128B-348D-4AA4-BDA0-0E1646504DB6}.Debug|x64.ActiveCfg = Debug|x64
+		{4DD7128B-348D-4AA4-BDA0-0E1646504DB6}.Debug|x64.Build.0 = Debug|x64
+		{4DD7128B-348D-4AA4-BDA0-0E1646504DB6}.Debug|x86.ActiveCfg = Debug|Win32
+		{4DD7128B-348D-4AA4-BDA0-0E1646504DB6}.Debug|x86.Build.0 = Debug|Win32
+		{4DD7128B-348D-4AA4-BDA0-0E1646504DB6}.Release|x64.ActiveCfg = Release|x64
+		{4DD7128B-348D-4AA4-BDA0-0E1646504DB6}.Release|x64.Build.0 = Release|x64
+		{4DD7128B-348D-4AA4-BDA0-0E1646504DB6}.Release|x86.ActiveCfg = Release|Win32
+		{4DD7128B-348D-4AA4-BDA0-0E1646504DB6}.Release|x86.Build.0 = Release|Win32
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
