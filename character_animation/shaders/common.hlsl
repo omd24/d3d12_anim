@@ -108,8 +108,8 @@ float CalcShadowFactor (float4 shadow_pos_h) {
     };
     [unroll]
     for (int i = 0; i < 9; ++i)
-    percent_lit +=
-    g_smap.SampleCmpLevelZero(g_sam_shadow, shadow_pos_h.xy + offsets[i], depth).r;
+        percent_lit +=
+            g_smap.SampleCmpLevelZero(g_sam_shadow, shadow_pos_h.xy + offsets[i], depth).r;
 
     return percent_lit / 9.0f;
 }
