@@ -1,0 +1,7 @@
+{
+    "recommendations": [
+        "timgjones.hlsltools",
+        "ms-vscode.cpptools",
+        "slevesque.shader"
+    ]
+}

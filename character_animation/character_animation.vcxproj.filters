@@ -51,10 +51,19 @@
     <ClInclude Include="..\common\upload_buffer.h">
       <Filter>Common Files\Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="animation_helper.h">
+    <ClInclude Include="frame_resource.h">
       <Filter>Demo Files</Filter>
     </ClInclude>
-    <ClInclude Include="frame_resource.h">
+    <ClInclude Include="load_m3d.h">
+      <Filter>Demo Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shadow_map.h">
+      <Filter>Demo Files</Filter>
+    </ClInclude>
+    <ClInclude Include="skinned_data.h">
+      <Filter>Demo Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ssao.h">
       <Filter>Demo Files</Filter>
     </ClInclude>
   </ItemGroup>
@@ -77,12 +86,6 @@
     <ClCompile Include="..\common\geometry_generator.cpp">
       <Filter>Common Files\Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="_main_quat_demo.cpp">
-      <Filter>Demo Files</Filter>
-    </ClCompile>
-    <ClCompile Include="animation_helper.cpp">
-      <Filter>Demo Files</Filter>
-    </ClCompile>
     <ClCompile Include="frame_resource.cpp">
       <Filter>Demo Files</Filter>
     </ClCompile>
@@ -104,6 +107,21 @@
     <ClCompile Include="..\externals\imgui\imgui_widgets.cpp">
       <Filter>ImGui Files</Filter>
     </ClCompile>
+    <ClCompile Include="_main_skinned_mesh_demo.cpp">
+      <Filter>Demo Files</Filter>
+    </ClCompile>
+    <ClCompile Include="load_m3d.cpp">
+      <Filter>Demo Files</Filter>
+    </ClCompile>
+    <ClCompile Include="shadow_map.cpp">
+      <Filter>Demo Files</Filter>
+    </ClCompile>
+    <ClCompile Include="skinned_data.cpp">
+      <Filter>Demo Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ssao.cpp">
+      <Filter>Demo Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <FxCompile Include="shaders\default.hlsl">
@@ -112,10 +130,23 @@
     <FxCompile Include="shaders\lighting_util.hlsl">
       <Filter>Resource Files</Filter>
     </FxCompile>
-  </ItemGroup>
-  <ItemGroup>
-    <Text Include="models\skull.txt">
+    <FxCompile Include="shaders\common.hlsl">
       <Filter>Resource Files</Filter>
-    </Text>
+    </FxCompile>
+    <FxCompile Include="shaders\draw_normals.hlsl">
+      <Filter>Resource Files</Filter>
+    </FxCompile>
+    <FxCompile Include="shaders\shadow_debug.hlsl">
+      <Filter>Resource Files</Filter>
+    </FxCompile>
+    <FxCompile Include="shaders\sky.hlsl">
+      <Filter>Resource Files</Filter>
+    </FxCompile>
+    <FxCompile Include="shaders\ssao.hlsl">
+      <Filter>Resource Files</Filter>
+    </FxCompile>
+    <FxCompile Include="shaders\ssao_blur.hlsl">
+      <Filter>Resource Files</Filter>
+    </FxCompile>
   </ItemGroup>
 </Project>
