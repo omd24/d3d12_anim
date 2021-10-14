@@ -148,5 +148,13 @@
     <FxCompile Include="shaders\ssao_blur.hlsl">
       <Filter>Resource Files</Filter>
     </FxCompile>
+    <FxCompile Include="shaders\shadows.hlsl">
+      <Filter>Resource Files</Filter>
+    </FxCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="models\soldier.m3d">
+      <Filter>Resource Files</Filter>
+    </None>
   </ItemGroup>
 </Project>
