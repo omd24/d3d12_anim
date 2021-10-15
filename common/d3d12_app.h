@@ -61,8 +61,8 @@ protected:
     D3D_DRIVER_TYPE driver_type_ = D3D_DRIVER_TYPE_HARDWARE;
     DXGI_FORMAT backbuffer_format_ = DXGI_FORMAT_R8G8B8A8_UNORM;
     DXGI_FORMAT depth_stencil_format_ = DXGI_FORMAT_D24_UNORM_S8_UINT;
-    int client_width_ = 1280;
-    int client_height_ = 720;
+    int client_width_ = 800;
+    int client_height_ = 600;
 
 public:
     static D3DApp * GetApp ();

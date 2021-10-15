@@ -5,7 +5,10 @@
 #include "../common/camera.h"
 
 #include "frame_resource.h"
-#include "animation_helper.h"
+#include "shadow_map.h"
+#include "ssao.h"
+#include "skinned_data.h"
+#include "load_m3d.h"
 
 #include <imgui/imgui.h>
 #include <imgui/imgui_impl_win32.h>
@@ -16,6 +19,27 @@ using namespace DirectX;
 using namespace DirectX::PackedVector;
 
 int const g_num_frame_resources = 3;
+
+struct SkinnedModelInstance {
+    SkinnedData * SkinnedInfo = nullptr;
+    std::vector<DirectX::XMFLOAT4X4> FinalTransforms;
+    std::string ClipName;
+    float TimePoint = 0.0f;
+
+    // -- called every frame, increments time,
+    // -- interpolates animation data for each bone based on current anim clip, and
+    // -- generates final transforms which are set to the effect for processing in the vertex shader
+    void UpdateSkinnedAnimation (float dt) {
+        TimePoint += dt;
+
+        // -- loop animation
+        if (TimePoint > SkinnedInfo->GetClipEndTime(ClipName))
+            TimePoint = 0.0f;
+
+        // -- compute final transforms for the given time point
+        SkinnedInfo->GetFinalTransforms(ClipName, TimePoint, FinalTransforms);
+    }
+};
 
 // -- store draw params to draw a shape
 struct RenderItem {
@@ -42,15 +66,32 @@ struct RenderItem {
     UINT IndexCount = 0;
     UINT StartIndexLocation = 0;
     int BaseVertexLocation = 0;
+
+    // -- only applicable to skinned render item
+    UINT SkinnedCBIndex = -1;
+
+    // -- nullptr if this render item is not animated by skinned mesh
+    SkinnedModelInstance * SkinnedModelInst = nullptr;
 };
 
-class QuatApp : public D3DApp {
+enum class RenderLayer : int {
+    Opaque = 0,
+    SkinnedOpaque,
+    Debug,
+    Sky,
+
+    COUNT_
+};
+
+class SkinnedMeshDemo : public D3DApp {
 private:
     std::vector<std::unique_ptr<FrameResource>> frame_resources_;
     FrameResource * curr_frame_resource_ = nullptr;
     int curr_frame_resource_index_ = 0;
 
     ComPtr<ID3D12RootSignature> root_sig_ = nullptr;
+    ComPtr<ID3D12RootSignature> ssao_root_sig_ = nullptr;
+
     ComPtr<ID3D12DescriptorHeap> srv_descriptor_heap_ = nullptr;
 
     std::unordered_map<std::string, std::unique_ptr<MeshGeometry>> geometries_;
@@ -60,24 +101,55 @@ private:
     std::unordered_map<std::string, ComPtr<ID3D12PipelineState>> psos_;
 
     std::vector<D3D12_INPUT_ELEMENT_DESC> input_layout_;
+    std::vector<D3D12_INPUT_ELEMENT_DESC> skinned_input_layout_;
 
     std::vector<std::unique_ptr<RenderItem>> all_ritems_;
-    std::vector<RenderItem *> opaque_ritems_;
+    std::vector<RenderItem *> render_layers_[(int)RenderLayer::COUNT_];
 
-    RenderItem * skull_ritem_;
-    XMFLOAT4X4 skull_world_ = MathHelper::Identity4x4();
+    UINT sky_tex_heap_index_ = 0;
+    UINT shadow_map_heap_index_ = 0;
+    UINT ssao_heap_index_start_ = 0;
+    UINT ssao_ambient_map_index_ = 0;
 
-    PassConstants main_pass_cb_;
+    CD3DX12_GPU_DESCRIPTOR_HANDLE null_srv_;
+
+    PassConstants main_pass_cb_;    // index 0 of frameresources pass buffer
+    PassConstants shadow_pass_cb_;  // index 1 of frameresources pass buffer
+
+    UINT skinned_srv_heap_index_ = 0;
+    std::string skinned_model_filename_ = "models/soldier.m3d";
+    std::unique_ptr<SkinnedModelInstance> skinned_model_inst_;
+    SkinnedData skinned_info_;
+    std::vector<M3DLoader::Subset> skinned_subsets_;
+    std::vector<M3DLoader::M3DMaterial> skinned_mats_;
+    std::vector<std::string> skinned_texture_names_;
 
     Camera camera_;
 
-    float anim_time_point_ = 0.0f;
-    BoneAnimation skull_animation_;
+    std::unique_ptr<ShadowMap> shadow_map_ptr_;
+    std::unique_ptr<SSAO> ssao_ptr_;
+
+    DirectX::BoundingSphere scene_bounds_;
+
+    float light_nearz_ = 0.0f;
+    float light_farz_ = 0.0f;
+    XMFLOAT3 light_pos_ws_;
+    XMFLOAT4X4 light_view_ = MathHelper::Identity4x4();
+    XMFLOAT4X4 light_proj_ = MathHelper::Identity4x4();
+    XMFLOAT4X4 shadow_transform_ = MathHelper::Identity4x4();
+
+    float light_rotation_angle_ = 0.0f;
+    XMFLOAT3 base_light_directions[3] = {
+        XMFLOAT3(0.57f, -0.57f, 0.57f),
+        XMFLOAT3(-0.57f, -0.57f, 0.57f),
+        XMFLOAT3(0.0f, -0.7f, -0.7f)
+    };
+    XMFLOAT3 rotated_light_directions[3];
 
     POINT last_mouse_pos_;
     bool mouse_active_ = true;
 
-public: // -- helpers
+public: // -- helper getters
     ID3D12DescriptorHeap * GetSrvHeap () { return srv_descriptor_heap_.Get(); }
     UINT GetCbvSrvUavDescriptorSize () { return cbv_srv_uav_descriptor_size_; }
     ID3D12Device * GetDevice () { return device_.Get(); }
@@ -92,14 +164,15 @@ public: // -- helpers
 
 
 public:
-    QuatApp (HINSTANCE instance);
-    QuatApp (QuatApp const & rhs) = delete;
-    QuatApp & operator= (QuatApp const & rhs) = delete;
-    ~QuatApp ();
+    SkinnedMeshDemo (HINSTANCE instance);
+    SkinnedMeshDemo (SkinnedMeshDemo const & rhs) = delete;
+    SkinnedMeshDemo & operator= (SkinnedMeshDemo const & rhs) = delete;
+    ~SkinnedMeshDemo ();
 
     virtual bool Init () override;
     virtual LRESULT MsgProc (HWND wnd, UINT msg, WPARAM wparam, LPARAM lparam) override;
 private:
+    virtual void BuildRtvAndDsvDescriptorHeaps () override;
     virtual void OnResize () override;
     virtual void Update (GameTimer const & gt) override;
     virtual void Draw (GameTimer const & gt) override;
@@ -113,18 +186,22 @@ private:
     void ImGuiUpdate ();
 
     void OnKeyboardInput (GameTimer const & gt);
-    void AnimateMaterial (GameTimer const & gt);
+    void AnimateMaterials (GameTimer const & gt);
     void UpdateObjectCBs (GameTimer const & gt);
-    void UpdateMainPassCB (GameTimer const & gt);
+    void UpdateSkinnedCBs (GameTimer const & gt);
     void UpdateMaterialBuffer (GameTimer const & gt);
+    void UpdateShadowTransform (GameTimer const & gt);
+    void UpdateMainPassCB (GameTimer const & gt);
+    void UpdateShadowPassCB (GameTimer const & gt);
+    void UpdateSSAOCB (GameTimer const & gt);
 
-    void DefineSkullAnimation ();
     void LoadTextures ();
     void BuildRootSignature ();
+    void BuildSSAORootSignature ();
     void BuildDescriptorHeaps ();
     void BuildShaderAndInputLayout ();
     void BuildShapeGeometry ();
-    void BuildSkullGeometry ();
+    void LoadSkinnedModel ();
     void BuildPSOs ();
     void BuildFrameResources ();
     void BuildMaterials ();
@@ -135,23 +212,37 @@ private:
         std::vector<RenderItem *> const & ritems
     );
 
-    std::array<CD3DX12_STATIC_SAMPLER_DESC const, 6> GetStaticSamplers ();
+    void DrawSceneToShadowMap ();
+    void DrawNormalAndDepth ();
+
+
+    CD3DX12_CPU_DESCRIPTOR_HANDLE GetHCpuSrv (int index) const;
+    CD3DX12_GPU_DESCRIPTOR_HANDLE GetHGpuSrv (int index) const;
+    CD3DX12_CPU_DESCRIPTOR_HANDLE GetHCpuDsv (int index) const;
+    CD3DX12_CPU_DESCRIPTOR_HANDLE GetHCpuRtv (int index) const;
+
+    std::array<CD3DX12_STATIC_SAMPLER_DESC const, 7> GetStaticSamplers ();
 };
 
-QuatApp::QuatApp (HINSTANCE instance)
+SkinnedMeshDemo::SkinnedMeshDemo (HINSTANCE instance)
     : D3DApp(instance)
 {
-    DefineSkullAnimation();
     wnd_title_ = L"D3D12 Character Animation Demo";
+
+    // -- since we know how the scene is constructed we can estimate the bounding sphere
+    // -- (the grid is the widest object (20x30) and placed at (0, 0, 0))
+    // -- in practice, we should loop over every WS vertex position and computing bounding sphere
+    scene_bounds_.Center = XMFLOAT3(0.0f, 0.0f, 0.0f);
+    scene_bounds_.Radius = sqrtf(10.0f * 10.0f + 15.0f * 15.0f); // dist from (0,0,0) to (10,0,15)
 }
-QuatApp::~QuatApp () {
+SkinnedMeshDemo::~SkinnedMeshDemo () {
     if (device_ != nullptr)
         FlushCmdQueue();
 
     // -- cleanup imgui
     ImGuiDeinit();
 }
-bool QuatApp::Init () {
+bool SkinnedMeshDemo::Init () {
     if (!D3DApp::Init())
         return false;
 
@@ -162,16 +253,23 @@ bool QuatApp::Init () {
 
     camera_.SetPosition(0.0f, 2.0f, -15.0f);
 
+    shadow_map_ptr_ = std::make_unique<ShadowMap>(device_.Get(), 2048, 2048);
+
+    ssao_ptr_ = std::make_unique<SSAO>(device_.Get(), cmdlist_.Get(), client_width_, client_height_);
+
+    LoadSkinnedModel();
     LoadTextures();
     BuildRootSignature();
+    BuildSSAORootSignature();
     BuildDescriptorHeaps();
     BuildShaderAndInputLayout();
     BuildShapeGeometry();
-    BuildSkullGeometry();
     BuildMaterials();
     BuildRenderItems();
     BuildFrameResources();
     BuildPSOs();
+
+    ssao_ptr_->SetPSOs(psos_["SSAO"].Get(), psos_["SSAOBlur"].Get());
 
     // -- schedule initialization commands
     THROW_IF_FAILED(cmdlist_->Close());
@@ -189,12 +287,12 @@ bool QuatApp::Init () {
 // Forward declare message handler from imgui_impl_win32.cpp
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
-LRESULT QuatApp::MsgProc (HWND wnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+LRESULT SkinnedMeshDemo::MsgProc (HWND wnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     if (ImGui_ImplWin32_WndProcHandler(wnd, msg, wparam, lparam))
         return true;
     return D3DApp::MsgProc(wnd, msg, wparam, lparam);
 }
-void QuatApp::ImGuiInit () {
+void SkinnedMeshDemo::ImGuiInit () {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
@@ -230,18 +328,19 @@ void QuatApp::ImGuiInit () {
     imgui_params_.window_flags |= ImGuiWindowFlags_NoBringToFrontOnFocus;
     //imgui_params_.window_flags |= ImGuiWindowFlags_NoResize;
 }
-void QuatApp::ImGuiDeinit () {
+void SkinnedMeshDemo::ImGuiDeinit () {
     ImGui_ImplDX12_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
 }
-void QuatApp::ImGuiUpdate () {
+void SkinnedMeshDemo::ImGuiUpdate () {
     ImGui_ImplDX12_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
     ImGui::Begin("Settings", imgui_params_.ptr_open, imgui_params_.window_flags);
     imgui_params_.beginwnd = ImGui::IsItemActive();
 
+#if 0
     if (ImGui::CollapsingHeader("Keyframes Data")) {
         //imgui_params_.anim_widgets = true;
         static float angle0 = 30.0f;
@@ -299,6 +398,7 @@ void QuatApp::ImGuiUpdate () {
         XMStoreFloat4(&skull_animation_.Keyframes[3].RotationQuat, q3);
         XMStoreFloat4(&skull_animation_.Keyframes[4].RotationQuat, q0);
     }
+#endif // 0
 
     ImGui::Separator();
     ImGui::Checkbox("Camera Mouse Movement", &mouse_active_);
@@ -313,25 +413,40 @@ void QuatApp::ImGuiUpdate () {
     // control mouse activation
     //mouse_active_ = !(imgui_params_.beginwnd || imgui_params_.anim_widgets);
 }
-void QuatApp::OnResize () {
+void SkinnedMeshDemo::BuildRtvAndDsvDescriptorHeaps () {
+    // -- add +1 for screen normal map, +2 for ambient maps
+    D3D12_DESCRIPTOR_HEAP_DESC rtv_heap_desc = {};
+    rtv_heap_desc.NumDescriptors = SwapchainBufferCount + 3;
+    rtv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    rtv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    rtv_heap_desc.NodeMask = 0;
+    THROW_IF_FAILED(device_->CreateDescriptorHeap(
+        &rtv_heap_desc, IID_PPV_ARGS(rtv_heap_.GetAddressOf())
+    ));
+    // -- add +1 DSV for shadow map
+    D3D12_DESCRIPTOR_HEAP_DESC dsv_heap_desc = {};
+    dsv_heap_desc.NumDescriptors = 2;
+    dsv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+    dsv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    dsv_heap_desc.NodeMask - 0;
+    THROW_IF_FAILED(device_->CreateDescriptorHeap(
+        &dsv_heap_desc, IID_PPV_ARGS(dsv_heap_.GetAddressOf())
+    ));
+}
+void SkinnedMeshDemo::OnResize () {
     D3DApp::OnResize();
     camera_.SetLens(0.25f * MathHelper::PI, AspectRatio(), 1.0f, 1000.0f);
+    if (ssao_ptr_ != nullptr) {
+        ssao_ptr_->OnResize(client_width_, client_height_);
+        ssao_ptr_->RebuildDescriptors(depth_stencil_buffer_.Get());
+    }
 }
 
-void QuatApp::Update (GameTimer const & gt) {
+void SkinnedMeshDemo::Update (GameTimer const & gt) {
 
     ImGuiUpdate();
 
     OnKeyboardInput(gt);
-
-#pragma region Skull Keyframe Animation
-    anim_time_point_ += gt.DeltaTime();
-    if (anim_time_point_ >= skull_animation_.GetEndTime())
-        anim_time_point_ = 0.0f;
-    skull_animation_.Interpolate(anim_time_point_, skull_world_);
-    skull_ritem_->World = skull_world_;
-    skull_ritem_->NumFramesDirty = g_num_frame_resources;
-#pragma endregion
 
     // -- cycle through circular frame resource array
     curr_frame_resource_index_ = (curr_backbuffer_index_ + 1) % g_num_frame_resources;
@@ -348,17 +463,36 @@ void QuatApp::Update (GameTimer const & gt) {
         CloseHandle(event_handle);
     }
 
-    AnimateMaterial(gt);
+    //
+    // -- animate lights (and hence shadows)
+    light_rotation_angle_ += 0.1f * gt.DeltaTime();
+
+    XMMATRIX R = XMMatrixRotationY(light_rotation_angle_);
+    for (int i = 0; i < 3; ++i) {
+        XMVECTOR light_dir = XMLoadFloat3(&base_light_directions[i]);
+        light_dir = XMVector3TransformNormal(light_dir, R);
+        XMStoreFloat3(&rotated_light_directions[i], light_dir);
+    }
+
+    AnimateMaterials(gt);
     UpdateObjectCBs(gt);
+    UpdateSkinnedCBs(gt);
     UpdateMaterialBuffer(gt);
+    UpdateShadowTransform(gt);
     UpdateMainPassCB(gt);
+    UpdateShadowPassCB(gt);
+    UpdateSSAOCB(gt);
 }
-void QuatApp::DrawRenderItems (
+void SkinnedMeshDemo::DrawRenderItems (
     ID3D12GraphicsCommandList * cmdlist,
     std::vector<RenderItem *> const & items
 ) {
     UINT obj_cb_byte_size = D3DUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
+    UINT skinned_cb_byte_size = D3DUtil::CalcConstantBufferByteSize(sizeof(SkinnedConstants));
+
     auto obj_cb = curr_frame_resource_->ObjCB->GetResource();
+    auto skinned_cb = curr_frame_resource_->SkinnedCB->GetResource();
+
     for (UINT i = 0; i < items.size(); ++i) {
         RenderItem * ri = items[i];
         cmdlist->IASetVertexBuffers(0, 1, &ri->Geo->VertexBufferView());
@@ -368,52 +502,188 @@ void QuatApp::DrawRenderItems (
         D3D12_GPU_VIRTUAL_ADDRESS obj_cb_address =
             obj_cb->GetGPUVirtualAddress() + (UINT64)ri->ObjCBIndex * obj_cb_byte_size;
         cmdlist->SetGraphicsRootConstantBufferView(0, obj_cb_address);
+
+        if (ri->SkinnedModelInst != nullptr) {
+            D3D12_GPU_VIRTUAL_ADDRESS skinned_cb_address =
+                skinned_cb->GetGPUVirtualAddress() + ri->SkinnedCBIndex * skinned_cb_byte_size;
+            cmdlist->SetGraphicsRootConstantBufferView(1, skinned_cb_address);
+        } else {
+            cmdlist->SetGraphicsRootConstantBufferView(1, 0);   // no skinned data
+        }
+
         cmdlist->DrawIndexedInstanced(ri->IndexCount, 1, ri->StartIndexLocation, ri->BaseVertexLocation, 0);
     }
 }
-void QuatApp::Draw (GameTimer const & gt) {
-    auto cmdalloc = curr_frame_resource_->CmdlistAllocator;
+void SkinnedMeshDemo::DrawSceneToShadowMap () {
+    cmdlist_->RSSetViewports(1, &shadow_map_ptr_->GetViewPort());
+    cmdlist_->RSSetScissorRects(1, &shadow_map_ptr_->GetScissorRect());
+    //
+    // -- first write depth to shadow map
+    cmdlist_->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+        shadow_map_ptr_->GetResource(), D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_DEPTH_WRITE));
 
-    THROW_IF_FAILED(cmdalloc->Reset());
+    cmdlist_->ClearDepthStencilView(
+        shadow_map_ptr_->GetDsvCpuHandle(),
+        D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL,
+        1.0f, 0,
+        0, nullptr
+    );
 
-    THROW_IF_FAILED(cmdlist_->Reset(cmdalloc.Get(), psos_["Opaque"].Get()));
+    // -- specify smap as the buffer we are going to render to (just as a depth buffer)
+    cmdlist_->OMSetRenderTargets(0, nullptr, false, &shadow_map_ptr_->GetDsvCpuHandle());
 
+    // -- bind the shadow pass buffer (index 1)
+    UINT pass_cb_byte_size = D3DUtil::CalcConstantBufferByteSize(sizeof(PassConstants));
+    auto pass_cb = curr_frame_resource_->PassCB->GetResource();
+    D3D12_GPU_VIRTUAL_ADDRESS pass_cb_address = pass_cb->GetGPUVirtualAddress() + 1 * pass_cb_byte_size;
+    cmdlist_->SetGraphicsRootConstantBufferView(2, pass_cb_address);
+
+    cmdlist_->SetPipelineState(psos_["ShadowOpaque"].Get());
+    DrawRenderItems(cmdlist_.Get(), render_layers_[(int)RenderLayer::SkinnedOpaque]);
+
+    cmdlist_->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+        shadow_map_ptr_->GetResource(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_GENERIC_READ));
+}
+void SkinnedMeshDemo::DrawNormalAndDepth () {
     cmdlist_->RSSetViewports(1, &screen_viewport_);
     cmdlist_->RSSetScissorRects(1, &scissor_rect_);
 
-    cmdlist_->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
-        GetCurrBackbuffer(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET
-    ));
+    auto normal_map = ssao_ptr_->GetNormalMap();
+    auto normal_map_rtv = ssao_ptr_->GetNormalMapCpuRtv();
 
-    cmdlist_->ClearRenderTargetView(GetCurrBackbufferView(), Colors::LightSteelBlue, 0, nullptr);
+    cmdlist_->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+        normal_map, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_RENDER_TARGET));
+
+    // -- clear screen normal map and depth buffer
+    float clear_vals [] = {0.0f, 0.0f, 1.0f, 0.0f};
+    cmdlist_->ClearRenderTargetView(normal_map_rtv, clear_vals, 0, nullptr);
     cmdlist_->ClearDepthStencilView(
         GetDepthStencilView(),
-        D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr
+        D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL,
+        1.0f, 0,
+        0, nullptr
     );
-    cmdlist_->OMSetRenderTargets(1, &GetCurrBackbufferView(), true, &GetDepthStencilView());
+
+    // -- specify the buffers we are going to render to
+    cmdlist_->OMSetRenderTargets(1, &normal_map_rtv, true, &GetDepthStencilView());
+
+    // -- bind the constant buffer for this pass (index 0)
+    auto pass_cb = curr_frame_resource_->PassCB->GetResource();
+    cmdlist_->SetGraphicsRootConstantBufferView(2, pass_cb->GetGPUVirtualAddress());
+    //
+    // -- draw calls:
+    cmdlist_->SetPipelineState(psos_["DrawNormals"].Get());
+    DrawRenderItems(cmdlist_.Get(), render_layers_[(int)RenderLayer::Opaque]);
+
+    cmdlist_->SetPipelineState(psos_["SkinnedDrawNormals"].Get());
+    DrawRenderItems(cmdlist_.Get(), render_layers_[(int)RenderLayer::SkinnedOpaque]);
+
+    cmdlist_->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+        normal_map, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_GENERIC_READ));
+}
+void SkinnedMeshDemo::Draw (GameTimer const & gt) {
+    auto cmdalloc = curr_frame_resource_->CmdlistAllocator;
+
+    THROW_IF_FAILED(cmdalloc->Reset());
+    // -- reset cmdalloc with whatever pso (later we set correct pso in DrawSceneToShadowMap):
+    THROW_IF_FAILED(cmdlist_->Reset(cmdalloc.Get(), psos_["Opaque"].Get()));
 
     ID3D12DescriptorHeap * descriptor_heaps [] = {srv_descriptor_heap_.Get()};
     cmdlist_->SetDescriptorHeaps(_countof(descriptor_heaps), descriptor_heaps);
 
     cmdlist_->SetGraphicsRootSignature(root_sig_.Get());
 
-    auto pass_cb = curr_frame_resource_->PassCB->GetResource();
-    cmdlist_->SetGraphicsRootConstantBufferView(1, pass_cb->GetGPUVirtualAddress());
-
+    //
+    // -- shadow pass:
+    //
     auto mat_buffer = curr_frame_resource_->MatBuffer->GetResource();
-    cmdlist_->SetGraphicsRootShaderResourceView(2, mat_buffer->GetGPUVirtualAddress());
+    cmdlist_->SetGraphicsRootShaderResourceView(3, mat_buffer->GetGPUVirtualAddress());
 
-    cmdlist_->SetGraphicsRootDescriptorTable(3, srv_descriptor_heap_->GetGPUDescriptorHandleForHeapStart());
+    // -- bind the null srv for shadow pass
+    cmdlist_->SetGraphicsRootDescriptorTable(4, null_srv_);
 
-    DrawRenderItems(cmdlist_.Get(), opaque_ritems_);
+    // -- bind all textures
+    cmdlist_->SetGraphicsRootDescriptorTable(5, srv_descriptor_heap_->GetGPUDescriptorHandleForHeapStart());
 
+    DrawSceneToShadowMap();
+
+    //
+    // -- Normal/Depth pass
+    //
+
+    DrawNormalAndDepth();
+
+    //
+    //  -- Build SSAO
+    //
+
+    cmdlist_->SetGraphicsRootSignature(ssao_root_sig_.Get());
+    ssao_ptr_->ComputeSSAO(cmdlist_.Get(), curr_frame_resource_, 2);
+
+    //
+    //  -- Main Rendering Pass:
+    //
+
+    cmdlist_->SetGraphicsRootSignature(root_sig_.Get());
+    //
+    // NOTE(omid): rebind state whenever graphics root sig changes:
+
+    // -- bind all materials: for structured buffer we can by pass specifying heap and just set a root descriptor
+    mat_buffer = curr_frame_resource_->MatBuffer->GetResource();
+    cmdlist_->SetGraphicsRootShaderResourceView(3, mat_buffer->GetGPUVirtualAddress());
+
+    cmdlist_->RSSetViewports(1, &screen_viewport_);
+    cmdlist_->RSSetScissorRects(1, &scissor_rect_);
+
+    cmdlist_->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+        GetCurrBackbuffer(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET));
+
+    cmdlist_->ClearRenderTargetView(GetCurrBackbufferView(), Colors::LightBlue, 0, nullptr);
+    cmdlist_->ClearDepthStencilView(
+        GetDepthStencilView(),
+        D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL,
+        1.0f, 0,
+        0, nullptr
+    );
+
+    // -- specify the buffers we are going to render to
+    cmdlist_->OMSetRenderTargets(1, &GetCurrBackbufferView(), true, &GetDepthStencilView());
+
+    // -- [re]bind all the textures
+    cmdlist_->SetGraphicsRootDescriptorTable(5, srv_descriptor_heap_->GetGPUDescriptorHandleForHeapStart());
+
+    // -- bind constant buffer for the pass
+    auto pass_cb = curr_frame_resource_->PassCB->GetResource();
+    cmdlist_->SetGraphicsRootConstantBufferView(2, pass_cb->GetGPUVirtualAddress());
+
+    // -- bind sky cubemap (here we have one but for multiple we could index dynamically into array of cubemaps or go per obj...)
+    CD3DX12_GPU_DESCRIPTOR_HANDLE sky_tex_descriptor(srv_descriptor_heap_->GetGPUDescriptorHandleForHeapStart());
+    sky_tex_descriptor.Offset(sky_tex_heap_index_, cbv_srv_uav_descriptor_size_);
+    cmdlist_->SetGraphicsRootDescriptorTable(4, sky_tex_descriptor);
+
+    cmdlist_->SetPipelineState(psos_["Opaque"].Get());
+    DrawRenderItems(cmdlist_.Get(), render_layers_[(int)RenderLayer::Opaque]);
+
+    cmdlist_->SetPipelineState(psos_["SkinnedOpaque"].Get());
+    DrawRenderItems(cmdlist_.Get(), render_layers_[(int)RenderLayer::SkinnedOpaque]);
+
+    cmdlist_->SetPipelineState(psos_["Debug"].Get());
+    DrawRenderItems(cmdlist_.Get(), render_layers_[(int)RenderLayer::Debug]);
+
+    cmdlist_->SetPipelineState(psos_["Sky"].Get());
+    DrawRenderItems(cmdlist_.Get(), render_layers_[(int)RenderLayer::Sky]);
+
+    //
     // -- imgui draw call
     ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), cmdlist_.Get());
 
+    //
     cmdlist_->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
-        GetCurrBackbuffer(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT
-    ));
+        GetCurrBackbuffer(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT));
 
+    //
+    // -- done recording commands:
+    //
     THROW_IF_FAILED(cmdlist_->Close());
     ID3D12CommandList * cmdlists [] = {cmdlist_.Get()};
     cmdqueue_->ExecuteCommandLists(_countof(cmdlists), cmdlists);
@@ -426,15 +696,15 @@ void QuatApp::Draw (GameTimer const & gt) {
     cmdqueue_->Signal(fence_.Get(), current_fence_value_);
 }
 
-void QuatApp::OnMouseDown (WPARAM btn_state, int x, int y) {
+void SkinnedMeshDemo::OnMouseDown (WPARAM btn_state, int x, int y) {
     last_mouse_pos_.x = x;
     last_mouse_pos_.y = y;
     SetCapture(hwnd_);
 }
-void QuatApp::OnMouseUp (WPARAM btn_state, int x, int y) {
+void SkinnedMeshDemo::OnMouseUp (WPARAM btn_state, int x, int y) {
     ReleaseCapture();
 }
-void QuatApp::OnMouseMove (WPARAM btn_state, int x, int y) {
+void SkinnedMeshDemo::OnMouseMove (WPARAM btn_state, int x, int y) {
     if (mouse_active_) {
         if ((btn_state & MK_LBUTTON) != 0) {
             // -- assume each pixel corresponds to 0.25 a degree
@@ -448,7 +718,7 @@ void QuatApp::OnMouseMove (WPARAM btn_state, int x, int y) {
     last_mouse_pos_.x = x;
     last_mouse_pos_.y = y;
 }
-void QuatApp::OnKeyboardInput (GameTimer const & gt) {
+void SkinnedMeshDemo::OnKeyboardInput (GameTimer const & gt) {
     float const dt = gt.DeltaTime();
     if (GetAsyncKeyState('W') & 0x8000)
         camera_.Walk(10.0f * dt);
@@ -461,10 +731,10 @@ void QuatApp::OnKeyboardInput (GameTimer const & gt) {
 
     camera_.UpdateViewMatrix();
 }
-void QuatApp::AnimateMaterial (GameTimer const & gt) {
+void SkinnedMeshDemo::AnimateMaterials (GameTimer const & gt) {
 
 }
-void QuatApp::UpdateObjectCBs (GameTimer const & gt) {
+void SkinnedMeshDemo::UpdateObjectCBs (GameTimer const & gt) {
     auto curr_obj_cb = curr_frame_resource_->ObjCB.get();
     for (auto & e : all_ritems_) {
         if (e->NumFramesDirty > 0) {
@@ -479,7 +749,10 @@ void QuatApp::UpdateObjectCBs (GameTimer const & gt) {
         }
     }
 }
-void QuatApp::UpdateMaterialBuffer (GameTimer const & gt) {
+void SkinnedMeshDemo::UpdateSkinnedCBs (GameTimer const & gt) {
+    ...
+}
+void SkinnedMeshDemo::UpdateMaterialBuffer (GameTimer const & gt) {
     auto curr_mat_buf = curr_frame_resource_->MatBuffer.get();
     for (auto & e : materials_) {
         Material * mat = e.second.get();
@@ -497,7 +770,10 @@ void QuatApp::UpdateMaterialBuffer (GameTimer const & gt) {
         }
     }
 }
-void QuatApp::UpdateMainPassCB (GameTimer const & gt) {
+void SkinnedMeshDemo::UpdateShadowTransform (GameTimer const & gt) {
+    ...
+}
+void SkinnedMeshDemo::UpdateMainPassCB (GameTimer const & gt) {
     XMMATRIX view = camera_.GetView();
     XMMATRIX proj = camera_.GetProj();
     XMMATRIX view_proj = XMMatrixMultiply(view, proj);
@@ -505,12 +781,25 @@ void QuatApp::UpdateMainPassCB (GameTimer const & gt) {
     XMMATRIX inv_proj = XMMatrixInverse(&XMMatrixDeterminant(proj), proj);
     XMMATRIX inv_view_proj = XMMatrixInverse(&XMMatrixDeterminant(view_proj), view_proj);
 
+    // -- transform NDC space [-1,+1]^2 to texture space [0,1]^2
+    XMMATRIX T(
+        0.5f, 0.0f, 0.0f, 0.0f,
+        0.0f, -0.5f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.5f, 0.5f, 0.0f, 1.0f
+    );
+    XMMATRIX view_proj_tex = XMMatrixMultiply(view_proj, T);
+
+    XMMATRIX shadow_transform = XMLoadFloat4x4(&shadow_transform_);
+
     XMStoreFloat4x4(&main_pass_cb_.View, XMMatrixTranspose(view));
     XMStoreFloat4x4(&main_pass_cb_.InvView, XMMatrixTranspose(inv_view));
     XMStoreFloat4x4(&main_pass_cb_.Proj, XMMatrixTranspose(proj));
     XMStoreFloat4x4(&main_pass_cb_.InvProj, XMMatrixTranspose(inv_proj));
     XMStoreFloat4x4(&main_pass_cb_.ViewProj, XMMatrixTranspose(view_proj));
     XMStoreFloat4x4(&main_pass_cb_.InvViewProj, XMMatrixTranspose(inv_view_proj));
+    XMStoreFloat4x4(&main_pass_cb_.ViewProjTex, XMMatrixTranspose(view_proj_tex));
+    XMStoreFloat4x4(&main_pass_cb_.ShadowTransform, XMMatrixTranspose(shadow_transform));
     main_pass_cb_.EyePosW = camera_.GetPosition3f();
     main_pass_cb_.RenderTargetSize = XMFLOAT2((float)client_width_, (float)client_height_);
     main_pass_cb_.InvRenderTargetSize = XMFLOAT2(1.0f / client_width_, 1.0f / client_height_);
@@ -519,15 +808,21 @@ void QuatApp::UpdateMainPassCB (GameTimer const & gt) {
     main_pass_cb_.TotalTime = gt.TotalTime();
     main_pass_cb_.DeltaTime = gt.DeltaTime();
     main_pass_cb_.AmbientLight = {0.25f, 0.25f, 0.35f, 1.0f};
-    main_pass_cb_.Lights[0].Direction = {0.57f, -0.57f, 0.57f};
-    main_pass_cb_.Lights[0].Strength = {0.6f, 0.6f, 0.6f};
-    main_pass_cb_.Lights[1].Direction = {-0.57f, -0.57f, 0.57f};
-    main_pass_cb_.Lights[1].Strength = {0.3f, 0.3f, 0.3f};
-    main_pass_cb_.Lights[2].Direction = {0.0f, -0.7f, -0.7f};
-    main_pass_cb_.Lights[2].Strength = {0.15f, 0.15f, 0.15f};
+    main_pass_cb_.Lights[0].Direction = rotated_light_directions[0];
+    main_pass_cb_.Lights[0].Strength = {0.9f, 0.9f, 0.7f};
+    main_pass_cb_.Lights[1].Direction = rotated_light_directions[1];
+    main_pass_cb_.Lights[1].Strength = {0.4f, 0.4f, 0.4f};
+    main_pass_cb_.Lights[2].Direction = rotated_light_directions[2];
+    main_pass_cb_.Lights[2].Strength = {0.2f, 0.2f, 0.2f};
 
     auto curr_pass_cb = curr_frame_resource_->PassCB.get();
     curr_pass_cb->CopyData(0, main_pass_cb_);
+}
+void SkinnedMeshDemo::UpdateShadowPassCB (GameTimer const & gt) {
+    ...
+}
+void SkinnedMeshDemo::UpdateSSAOCB (GameTimer const & gt) {
+    ...
 }
 void QuatApp::BuildShapeGeometry () {
     GeometryGenerator ggen;
@@ -1165,7 +1460,7 @@ WinMain (
     _CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);
 #endif
     try {
-        QuatApp demo_app(instance);
+        SkinnedMeshDemo demo_app(instance);
         if (!demo_app.Init())
             return 0;
         return demo_app.Run();
