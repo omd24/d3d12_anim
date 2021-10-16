@@ -84,7 +84,7 @@ struct SkinnedVertex {
 class FrameResource
 {
 public:
-    FrameResource (ID3D12Device * dev, UINT pass_cnt, UINT obj_cnt, UINT mat_cnt);
+    FrameResource (ID3D12Device * dev, UINT pass_cnt, UINT obj_cnt, UINT skinned_obj_cnt, UINT mat_cnt);
     FrameResource (FrameResource const & rhs) = delete;
     FrameResource & operator= (FrameResource const & rhs) = delete;
     ~FrameResource ();

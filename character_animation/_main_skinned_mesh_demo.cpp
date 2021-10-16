@@ -111,12 +111,16 @@ private:
     UINT ssao_heap_index_start_ = 0;
     UINT ssao_ambient_map_index_ = 0;
 
-    CD3DX12_GPU_DESCRIPTOR_HANDLE null_srv_;
+    UINT null_cube_srv_index = 0;
+    UINT null_tex_srv_index1 = 0;
+    UINT null_tex_srv_index2 = 0;
+
+    CD3DX12_GPU_DESCRIPTOR_HANDLE hgpu_null_srv_;
 
     PassConstants main_pass_cb_;    // index 0 of frameresources pass buffer
     PassConstants shadow_pass_cb_;  // index 1 of frameresources pass buffer
 
-    UINT skinned_srv_heap_index_ = 0;
+    UINT skinned_srv_heap_start_index_ = 0;
     std::string skinned_model_filename_ = "models/soldier.m3d";
     std::unique_ptr<SkinnedModelInstance> skinned_model_inst_;
     SkinnedData skinned_info_;
@@ -600,7 +604,7 @@ void SkinnedMeshDemo::Draw (GameTimer const & gt) {
     cmdlist_->SetGraphicsRootShaderResourceView(3, mat_buffer->GetGPUVirtualAddress());
 
     // -- bind the null srv for shadow pass
-    cmdlist_->SetGraphicsRootDescriptorTable(4, null_srv_);
+    cmdlist_->SetGraphicsRootDescriptorTable(4, hgpu_null_srv_);
 
     // -- bind all textures
     cmdlist_->SetGraphicsRootDescriptorTable(5, srv_descriptor_heap_->GetGPUDescriptorHandleForHeapStart());
@@ -750,7 +754,19 @@ void SkinnedMeshDemo::UpdateObjectCBs (GameTimer const & gt) {
     }
 }
 void SkinnedMeshDemo::UpdateSkinnedCBs (GameTimer const & gt) {
-    ...
+    auto curr_skinned_cb = curr_frame_resource_->SkinnedCB.get();
+
+    // -- we only hav one skinned model being animated
+    skinned_model_inst_->UpdateSkinnedAnimation(gt.DeltaTime());
+
+    SkinnedConstants skinned_constants;
+    std::copy(
+        std::begin(skinned_model_inst_->FinalTransforms),
+        std::end(skinned_model_inst_->FinalTransforms),
+        &skinned_constants.BoneTransforms[0]
+    );
+
+    curr_skinned_cb->CopyData(0, skinned_constants);
 }
 void SkinnedMeshDemo::UpdateMaterialBuffer (GameTimer const & gt) {
     auto curr_mat_buf = curr_frame_resource_->MatBuffer.get();
@@ -771,7 +787,43 @@ void SkinnedMeshDemo::UpdateMaterialBuffer (GameTimer const & gt) {
     }
 }
 void SkinnedMeshDemo::UpdateShadowTransform (GameTimer const & gt) {
-    ...
+    // -- only the first "main" light casts a shadow
+    XMVECTOR light_dir = XMLoadFloat3(&rotated_light_directions[0]);
+    XMVECTOR light_pos = -2.0f * scene_bounds_.Radius * light_dir;
+    XMVECTOR target_pos = XMLoadFloat3(&scene_bounds_.Center);
+    XMVECTOR light_up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+    XMMATRIX light_view = XMMatrixLookAtLH(light_pos, target_pos, light_up);
+
+    XMStoreFloat3(&light_pos_ws_, light_pos);
+
+    // -- transform bounding sphere to light space
+    XMFLOAT3 sphere_center_light_space;
+    XMStoreFloat3(&sphere_center_light_space, XMVector3TransformCoord(target_pos, light_view));
+
+    // -- orthographic view frustum in light space which encloses scene
+    float l = sphere_center_light_space.x - scene_bounds_.Radius;
+    float b = sphere_center_light_space.y - scene_bounds_.Radius;
+    float n = sphere_center_light_space.z - scene_bounds_.Radius;
+    float r = sphere_center_light_space.x + scene_bounds_.Radius;
+    float t = sphere_center_light_space.y + scene_bounds_.Radius;
+    float f = sphere_center_light_space.z + scene_bounds_.Radius;
+
+    light_farz_ = f;
+    light_nearz_ = n;
+    XMMATRIX light_proj = XMMatrixOrthographicOffCenterLH(l, r, b, t, n, f);
+
+    // -- transform NDC space [-1,+1]^2 to texture space [0,1]^2
+    XMMATRIX T(
+        0.5f, 0.0f, 0.0f, 0.0f,
+        0.0f, -0.5f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.5f, 0.5f, 0.0f, 1.0f
+    );
+
+    XMMATRIX S = light_view * light_proj * T;
+    XMStoreFloat4x4(&light_view_, light_view);
+    XMStoreFloat4x4(&light_proj_, light_proj);
+    XMStoreFloat4x4(&shadow_transform_, S);
 }
 void SkinnedMeshDemo::UpdateMainPassCB (GameTimer const & gt) {
     XMMATRIX view = camera_.GetView();
@@ -819,27 +871,85 @@ void SkinnedMeshDemo::UpdateMainPassCB (GameTimer const & gt) {
     curr_pass_cb->CopyData(0, main_pass_cb_);
 }
 void SkinnedMeshDemo::UpdateShadowPassCB (GameTimer const & gt) {
-    ...
+    XMMATRIX view = XMLoadFloat4x4(&light_view_);
+    XMMATRIX proj = XMLoadFloat4x4(&light_proj_);
+
+    XMMATRIX view_proj = XMMatrixMultiply(view, proj);
+    XMMATRIX inv_view = XMMatrixInverse(&XMMatrixDeterminant(view), view);
+    XMMATRIX inv_proj = XMMatrixInverse(&XMMatrixDeterminant(proj), proj);
+    XMMATRIX inv_view_proj = XMMatrixInverse(&XMMatrixDeterminant(view_proj), view_proj);
+
+    UINT w = shadow_map_ptr_->GetWidth();
+    UINT h = shadow_map_ptr_->GetHeight();
+
+    XMStoreFloat4x4(&shadow_pass_cb_.View, XMMatrixTranspose(view));
+    XMStoreFloat4x4(&shadow_pass_cb_.InvView, XMMatrixTranspose(inv_view));
+    XMStoreFloat4x4(&shadow_pass_cb_.Proj, XMMatrixTranspose(proj));
+    XMStoreFloat4x4(&shadow_pass_cb_.InvProj, XMMatrixTranspose(inv_proj));
+    XMStoreFloat4x4(&shadow_pass_cb_.ViewProj, XMMatrixTranspose(view_proj));
+    XMStoreFloat4x4(&shadow_pass_cb_.InvViewProj, XMMatrixTranspose(inv_view_proj));
+    shadow_pass_cb_.EyePosW = light_pos_ws_;
+    shadow_pass_cb_.RenderTargetSize = XMFLOAT2((float)w, float(h));
+    shadow_pass_cb_.InvRenderTargetSize = XMFLOAT2(1.0f / w, 1.0f / h);
+    shadow_pass_cb_.NearZ = light_nearz_;
+    shadow_pass_cb_.FarZ = light_farz_;
+
+    auto curr_pass_cb = curr_frame_resource_->PassCB.get();
+    curr_pass_cb->CopyData(1, shadow_pass_cb_);
 }
 void SkinnedMeshDemo::UpdateSSAOCB (GameTimer const & gt) {
-    ...
+    SSAOConstants ssao_cb;
+
+    XMMATRIX P = camera_.GetProj();
+
+    // -- transform NDC space [-1,1]^2 to texture space [0,1]^2
+    XMMATRIX T(
+        0.5f, 0.0f, 0.0f, 0.0f,
+        0.0f, -0.5f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.5f, 0.5f, 0.0f, 1.0f
+    );
+
+    ssao_cb.Proj = main_pass_cb_.Proj;
+    ssao_cb.InvProj = main_pass_cb_.InvProj;
+    XMStoreFloat4x4(&ssao_cb.ProjTex, XMMatrixTranspose(P * T));
+
+    ssao_ptr_->GetOffsetvectors(ssao_cb.OffsetVectors);
+
+    auto blur_weights = ssao_ptr_->CalcGaussWeights(2.5f);
+    ssao_cb.BlurWeights[0] = XMFLOAT4(&blur_weights[0]);
+    ssao_cb.BlurWeights[1] = XMFLOAT4(&blur_weights[4]);
+    ssao_cb.BlurWeights[2] = XMFLOAT4(&blur_weights[8]);
+
+    ssao_cb.InvRenderTargetSize = XMFLOAT2(1.0f / ssao_ptr_->GetSSAOMapWidth(), 1.0f / ssao_ptr_->GetSSAOMapHeight());
+
+    ssao_cb.OcclusionRadius = 0.5f;
+    ssao_cb.OcclusionFadeStart = 0.2f;
+    ssao_cb.OcclusionFadeEnd = 2.0f;
+    ssao_cb.SurfaceEpsilon = 0.05f;
+
+    auto curr_ssao_cb = curr_frame_resource_->SSAOCB.get();
+    curr_ssao_cb->CopyData(0, ssao_cb);
 }
-void QuatApp::BuildShapeGeometry () {
+void SkinnedMeshDemo::BuildShapeGeometry () {
     GeometryGenerator ggen;
     auto box = ggen.CreateBox(1.0f, 1.0f, 1.0f, 3);
     auto grid = ggen.CreateGrid(20.0f, 30.0f, 60, 40);
     auto sphere = ggen.CreateSphere(0.5f, 20, 20);
     auto cylinder = ggen.CreateCylinder(0.5f, 0.3f, 3.0f, 20, 20);
+    auto quad = ggen.CreateQuad(0.0f, 0.0f, 1.0f, 1.0f, 0.0f);
 
     UINT box_vtx_offset = 0;
     UINT grid_vtx_offset = (UINT)box.Vertices.size();
     UINT sphere_vtx_offset = grid_vtx_offset + (UINT)grid.Vertices.size();
     UINT cylinder_vtx_offset = sphere_vtx_offset + (UINT)sphere.Vertices.size();
+    UINT quad_vtx_offset = cylinder_vtx_offset + (UINT)cylinder.Vertices.size();
 
     UINT box_idx_offset = 0;
     UINT grid_idx_offset = (UINT)box.Indices32.size();
     UINT sphere_idx_offset = grid_idx_offset + (UINT)grid.Indices32.size();
     UINT cylinder_idx_offset = sphere_idx_offset + (UINT)sphere.Indices32.size();
+    UINT quad_idx_offset = cylinder_idx_offset + (UINT)cylinder.Indices32.size();
 
     SubmeshGeometry box_submesh;
     box_submesh.IndexCount = (UINT)box.Indices32.size();
@@ -861,33 +971,49 @@ void QuatApp::BuildShapeGeometry () {
     cylinder_submesh.StartIndexLocation = cylinder_idx_offset;
     cylinder_submesh.BaseVertexLocation = cylinder_vtx_offset;
 
+    SubmeshGeometry quad_submesh;
+    quad_submesh.IndexCount = (UINT)quad.Indices32.size();
+    quad_submesh.StartIndexLocation = quad_idx_offset;
+    quad_submesh.BaseVertexLocation = quad_vtx_offset;
+
     // extract mesh data and pack them into one vertex buffer
     auto total_vtx_count =
         box.Vertices.size() +
         grid.Vertices.size() +
         sphere.Vertices.size() +
-        cylinder.Vertices.size();
+        cylinder.Vertices.size() +
+        quad.Vertices.size();
     std::vector<Vertex> vertices(total_vtx_count);
     UINT k = 0;
     for (UINT i = 0; i < box.Vertices.size(); ++i, ++k) {
         vertices[k].Pos = box.Vertices[i].Position;
         vertices[k].Normal = box.Vertices[i].Normal;
         vertices[k].TexC = box.Vertices[i].TexCoord;
+        vertices[k].TangentU = box.Vertices[i].TangentU;
     }
     for (UINT i = 0; i < grid.Vertices.size(); ++i, ++k) {
         vertices[k].Pos = grid.Vertices[i].Position;
         vertices[k].Normal = grid.Vertices[i].Normal;
         vertices[k].TexC = grid.Vertices[i].TexCoord;
+        vertices[k].TangentU = grid.Vertices[i].TangentU;
     }
     for (UINT i = 0; i < sphere.Vertices.size(); ++i, ++k) {
         vertices[k].Pos = sphere.Vertices[i].Position;
         vertices[k].Normal = sphere.Vertices[i].Normal;
         vertices[k].TexC = sphere.Vertices[i].TexCoord;
+        vertices[k].TangentU = sphere.Vertices[i].TangentU;
     }
     for (UINT i = 0; i < cylinder.Vertices.size(); ++i, ++k) {
         vertices[k].Pos = cylinder.Vertices[i].Position;
         vertices[k].Normal = cylinder.Vertices[i].Normal;
         vertices[k].TexC = cylinder.Vertices[i].TexCoord;
+        vertices[k].TangentU = cylinder.Vertices[i].TangentU;
+    }
+    for (UINT i = 0; i < quad.Vertices.size(); ++i, ++k) {
+        vertices[k].Pos = quad.Vertices[i].Position;
+        vertices[k].Normal = quad.Vertices[i].Normal;
+        vertices[k].TexC = quad.Vertices[i].TexCoord;
+        vertices[k].TangentU = quad.Vertices[i].TangentU;
     }
 
     std::vector<std::uint16_t> indices;
@@ -895,6 +1021,7 @@ void QuatApp::BuildShapeGeometry () {
     indices.insert(indices.end(), std::begin(grid.GetIndices16()), std::end(grid.GetIndices16()));
     indices.insert(indices.end(), std::begin(sphere.GetIndices16()), std::end(sphere.GetIndices16()));
     indices.insert(indices.end(), std::begin(cylinder.GetIndices16()), std::end(cylinder.GetIndices16()));
+    indices.insert(indices.end(), std::begin(quad.GetIndices16()), std::end(quad.GetIndices16()));
 
     UINT const vb_byte_size = (UINT)vertices.size() * sizeof(Vertex);
     UINT const ib_byte_size = (UINT)indices.size() * sizeof(std::uint16_t);
@@ -924,187 +1051,110 @@ void QuatApp::BuildShapeGeometry () {
     geo->IndexFormat = DXGI_FORMAT_R16_UINT;
     geo->IndexBufferByteSize = ib_byte_size;
 
-    geo->DrawArgs["box"] = box_submesh;
-    geo->DrawArgs["grid"] = grid_submesh;
-    geo->DrawArgs["sphere"] = sphere_submesh;
-    geo->DrawArgs["cylinder"] = cylinder_submesh;
+    geo->DrawArgs["Box"] = box_submesh;
+    geo->DrawArgs["Grid"] = grid_submesh;
+    geo->DrawArgs["Sphere"] = sphere_submesh;
+    geo->DrawArgs["Cylinder"] = cylinder_submesh;
+    geo->DrawArgs["Quad"] = quad_submesh;
 
     geometries_[geo->Name] = std::move(geo);
 }
-void QuatApp::BuildSkullGeometry () {
-    std::ifstream fin("models/skull.txt");
-    if (!fin) {
-        MessageBox(0, L"models/skull.txt not found", 0, 0);
-        return;
-    }
-    UINT vcount = 0;
-    UINT tcount = 0;
-    std::string ignore;
-
-    fin >> ignore >> vcount;
-    fin >> ignore >> tcount;
-    fin >> ignore >> ignore >> ignore >> ignore;
-
-    XMFLOAT3 vminf3(+MathHelper::Infinity, +MathHelper::Infinity, +MathHelper::Infinity);
-    XMFLOAT3 vmaxf3(-MathHelper::Infinity, -MathHelper::Infinity, -MathHelper::Infinity);
-
-    XMVECTOR vmin = XMLoadFloat3(&vminf3);
-    XMVECTOR vmax = XMLoadFloat3(&vmaxf3);
-
-    std::vector<Vertex> vertices(vcount);
-    for (UINT i = 0; i < vcount; ++i) {
-        fin >> vertices[i].Pos.x >> vertices[i].Pos.y >> vertices[i].Pos.z;
-        fin >> vertices[i].Normal.x >> vertices[i].Normal.y >> vertices[i].Normal.z;
-
-        XMVECTOR P = XMLoadFloat3(&vertices[i].Pos);
-
-        // -- project point onto unit sphere and generate spherical texture coordinates
-        XMFLOAT3 sphere_pos;
-        XMStoreFloat3(&sphere_pos, XMVector3Normalize(P));
-
-        float theta = atan2f(sphere_pos.z, sphere_pos.x);
-        if (theta < 0.0f)   // [0, 2pi]
-            theta += XM_2PI;
-        float phi = acosf(sphere_pos.y);
-
-        float u = theta / (2.0f * XM_PI);
-        float v = phi / XM_PI;
-
-        vertices[i].TexC = {u, v};
-
-        vmin = XMVectorMin(vmin, P);
-        vmax = XMVectorMin(vmax, P);
-    }
-
-    BoundingBox bounds;
-    XMStoreFloat3(&bounds.Center, 0.5f * (vmin + vmax));
-    XMStoreFloat3(&bounds.Extents, 0.5f * (vmax - vmin));
-
-    fin >> ignore;
-    fin >> ignore;
-    fin >> ignore;
-
-    std::vector<std::int32_t> indices(3 * tcount);
-    for (UINT i = 0; i < tcount; ++i)
-        fin >> indices[i * 3 + 0] >> indices[i * 3 + 1] >> indices[i * 3 + 2];
-    fin.close();
-
-    UINT const vb_byte_size = (UINT)vertices.size() * sizeof(Vertex);
-    UINT const ib_byte_size = (UINT)indices.size() * sizeof(std::int32_t);
-
-    auto geo = std::make_unique<MeshGeometry>();
-    geo->Name = "SkullGeo";
-
-    THROW_IF_FAILED(D3DCreateBlob(vb_byte_size, &geo->VertexBufferCpu));
-    CopyMemory(geo->VertexBufferCpu->GetBufferPointer(), vertices.data(), vb_byte_size);
-
-    THROW_IF_FAILED(D3DCreateBlob(ib_byte_size, &geo->IndexBufferCpu));
-    CopyMemory(geo->IndexBufferCpu->GetBufferPointer(), indices.data(), ib_byte_size);
-
-    geo->VertexBufferGpu = D3DUtil::CreateDefaultBuffer(
-        device_.Get(), cmdlist_.Get(),
-        vertices.data(), vb_byte_size,
-        geo->VertexBufferUploader
-    );
-    geo->IndexBufferGpu = D3DUtil::CreateDefaultBuffer(
-        device_.Get(), cmdlist_.Get(),
-        indices.data(), ib_byte_size,
-        geo->IndexBufferUploader
-    );
-
-    geo->VertexByteStride = sizeof(Vertex);
-    geo->VertexBufferByteSize = vb_byte_size;
-    geo->IndexFormat = DXGI_FORMAT_R32_UINT;
-    geo->IndexBufferByteSize = ib_byte_size;
-
-    SubmeshGeometry submesh;
-    submesh.IndexCount = (UINT)indices.size();
-    submesh.BaseVertexLocation = 0;
-    submesh.StartIndexLocation = 0;
-    submesh.Bounds = bounds;
-    geo->DrawArgs["skull"] = submesh;
-
-    geometries_[geo->Name] = std::move(geo);
-}
-void QuatApp::BuildMaterials () {
+void SkinnedMeshDemo::BuildMaterials () {
     auto brick0 = std::make_unique<Material>();
     brick0->Name = "Brick0";
     brick0->MatBufferIndex = 0;
     brick0->DiffuseSrvHeapIndex = 0;
+    brick0->NormalSrvHeapIndex = 1;
     brick0->DiffuseAlbedo = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
     brick0->FresnelR0 = XMFLOAT3(0.1f, 0.1f, 0.1f);
     brick0->Roughness = 0.3f;
 
-    auto stone0 = std::make_unique<Material>();
-    stone0->Name = "Stone0";
-    stone0->MatBufferIndex = 1;
-    stone0->DiffuseSrvHeapIndex = 1;
-    stone0->DiffuseAlbedo = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
-    stone0->FresnelR0 = XMFLOAT3(0.1f, 0.1f, 0.1f);
-    stone0->Roughness = 0.3f;
-
     auto tile0 = std::make_unique<Material>();
     tile0->Name = "Tile0";
-    tile0->MatBufferIndex = 2;
+    tile0->MatBufferIndex = 1;
     tile0->DiffuseSrvHeapIndex = 2;
+    tile0->DiffuseSrvHeapIndex = 3;
     tile0->DiffuseAlbedo = XMFLOAT4(0.9f, 0.9f, 0.9f, 1.0f);
     tile0->FresnelR0 = XMFLOAT3(0.2f, 0.2f, 0.2f);
     tile0->Roughness = 0.1f;
 
-    auto crate0 = std::make_unique<Material>();
-    crate0->Name = "Crate0";
-    crate0->MatBufferIndex = 3;
-    crate0->DiffuseSrvHeapIndex = 3;
-    crate0->DiffuseAlbedo = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
-    crate0->FresnelR0 = XMFLOAT3(0.05f, 0.05f, 0.05f);
-    crate0->Roughness = 0.7f;
+    auto mirror0 = std::make_unique<Material>();
+    mirror0->Name = "Mirror0";
+    mirror0->MatBufferIndex = 2;
+    mirror0->DiffuseSrvHeapIndex = 4;
+    mirror0->DiffuseSrvHeapIndex = 5;
+    mirror0->DiffuseAlbedo = XMFLOAT4(0.0f, 0.0f, 0.0f, 1.0f);
+    mirror0->FresnelR0 = XMFLOAT3(0.95f, 0.95f, 0.95f);
+    mirror0->Roughness = 0.1f;
 
-    auto skull_mat = std::make_unique<Material>();
-    skull_mat->Name = "SkullMat";
-    skull_mat->MatBufferIndex = 4;
-    skull_mat->DiffuseSrvHeapIndex = 4;
-    skull_mat->DiffuseAlbedo = XMFLOAT4(0.9f, 0.9f, 0.9f, 1.0f);
-    skull_mat->FresnelR0 = XMFLOAT3(0.2f, 0.2f, 0.2f);
-    skull_mat->Roughness = 0.2f;
+    auto sky = std::make_unique<Material>();
+    sky->Name = "Sky";
+    sky->MatBufferIndex = 3;
+    sky->DiffuseSrvHeapIndex = 6;
+    sky->DiffuseSrvHeapIndex = 7;
+    sky->DiffuseAlbedo = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
+    sky->FresnelR0 = XMFLOAT3(0.1f, 0.1f, 0.1f);
+    sky->Roughness = 1.0f;
 
     materials_[brick0->Name] = std::move(brick0);
-    materials_[stone0->Name] = std::move(stone0);
     materials_[tile0->Name] = std::move(tile0);
-    materials_[crate0->Name] = std::move(crate0);
-    materials_[skull_mat->Name] = std::move(skull_mat);
+    materials_[mirror0->Name] = std::move(mirror0);
+    materials_[sky->Name] = std::move(sky);
+
+    UINT mat_cb_index = 4;
+    UINT srv_heap_index = skinned_srv_heap_start_index_;
+    for (UINT i = 0; i < skinned_mats_.size(); ++i) {
+        auto mat = std::make_unique<Material>();
+        mat->Name = skinned_mats_[i].Name;
+        mat->MatBufferIndex = mat_cb_index++;
+        mat->DiffuseSrvHeapIndex = srv_heap_index++;
+        mat->NormalSrvHeapIndex = srv_heap_index++;
+        mat->DiffuseAlbedo = skinned_mats_[i].DiffuseAlbedo;
+        mat->FresnelR0 = skinned_mats_[i].FresnelR0;
+        mat->Roughness = skinned_mats_[i].Roughness;
+        materials_[mat->Name] = std::move(mat);
+    }
 }
-void QuatApp::BuildRenderItems () {
+void SkinnedMeshDemo::BuildRenderItems () {
     UINT obj_index = 0;
 
-    auto skull = std::make_unique<RenderItem>();
-    XMStoreFloat4x4(
-        &skull->World,
-        XMMatrixScaling(0.5f, 0.5f, 0.5f) * XMMatrixTranslation(0.0f, 1.0f, 0.0f)
-    );
-    skull->TexTransform = MathHelper::Identity4x4();
-    skull->ObjCBIndex = obj_index++;
-    skull->Mat = materials_["SkullMat"].get();
-    skull->Geo = geometries_["SkullGeo"].get();
-    skull->PrimitiveType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-    skull->IndexCount = skull->Geo->DrawArgs["skull"].IndexCount;
-    skull->StartIndexLocation = skull->Geo->DrawArgs["skull"].StartIndexLocation;
-    skull->BaseVertexLocation = skull->Geo->DrawArgs["skull"].BaseVertexLocation;
-    skull_ritem_ = skull.get();
-    all_ritems_.push_back(std::move(skull));
+    auto sky_ritem = std::make_unique<RenderItem>();
+    XMStoreFloat4x4(&sky_ritem->World, XMMatrixScaling(5000.0f, 5000.0f, 5000.0f));
+    sky_ritem->TexTransform = MathHelper::Identity4x4();
+    sky_ritem->ObjCBIndex = obj_index++;
+    sky_ritem->Mat = materials_["Sky"].get();
+    sky_ritem->Geo = geometries_["ShapeGeo"].get();
+    sky_ritem->PrimitiveType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+    sky_ritem->IndexCount = sky_ritem->Geo->DrawArgs["Sphere"].IndexCount;
+    sky_ritem->StartIndexLocation = sky_ritem->Geo->DrawArgs["Sphere"].StartIndexLocation;
+    sky_ritem->BaseVertexLocation = sky_ritem->Geo->DrawArgs["Sphere"].BaseVertexLocation;
+    render_layers_[(int)RenderLayer::Sky].push_back(sky_ritem.get());
+    all_ritems_.push_back(std::move(sky_ritem));
+
+    auto quad_ritem = std::make_unique<RenderItem>();
+    quad_ritem->World = MathHelper::Identity4x4();
+    quad_ritem->TexTransform = MathHelper::Identity4x4();
+    quad_ritem->ObjCBIndex = obj_index++;
+    quad_ritem->Mat = materials_["Brick0"].get();
+    quad_ritem->Geo = geometries_["ShapeGeo"].get();
+    quad_ritem->PrimitiveType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+    quad_ritem->IndexCount = quad_ritem->Geo->DrawArgs["Quad"].IndexCount;
+    quad_ritem->StartIndexLocation = quad_ritem->Geo->DrawArgs["Quad"].StartIndexLocation;
+    quad_ritem->BaseVertexLocation = quad_ritem->Geo->DrawArgs["Quad"].BaseVertexLocation;
+    render_layers_[(int)RenderLayer::Debug].push_back(quad_ritem.get());
+    all_ritems_.push_back(std::move(quad_ritem));
 
     auto box = std::make_unique<RenderItem>();
-    XMStoreFloat4x4(
-        &box->World,
-        XMMatrixScaling(3.0f, 1.0f, 3.0f) * XMMatrixTranslation(0.0f, 0.5f, 0.0f)
-    );
+    XMStoreFloat4x4(&box->World, XMMatrixScaling(2.0f, 1.0f, 2.0f) * XMMatrixTranslation(0.0f, 0.5f, 0.0f));
     XMStoreFloat4x4(&box->TexTransform, XMMatrixScaling(1.0f, 1.0f, 1.0f));
     box->ObjCBIndex = obj_index++;
-    box->Mat = materials_["Stone0"].get();
+    box->Mat = materials_["Brick0"].get();
     box->Geo = geometries_["ShapeGeo"].get();
     box->PrimitiveType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-    box->IndexCount = box->Geo->DrawArgs["box"].IndexCount;
-    box->StartIndexLocation = box->Geo->DrawArgs["box"].StartIndexLocation;
-    box->BaseVertexLocation = box->Geo->DrawArgs["box"].BaseVertexLocation;
+    box->IndexCount = box->Geo->DrawArgs["Box"].IndexCount;
+    box->StartIndexLocation = box->Geo->DrawArgs["Box"].StartIndexLocation;
+    box->BaseVertexLocation = box->Geo->DrawArgs["Box"].BaseVertexLocation;
+    render_layers_[(int)RenderLayer::Opaque].push_back(box.get());
     all_ritems_.push_back(std::move(box));
 
     auto grid = std::make_unique<RenderItem>();
@@ -1114,9 +1164,10 @@ void QuatApp::BuildRenderItems () {
     grid->Mat = materials_["Tile0"].get();
     grid->Geo = geometries_["ShapeGeo"].get();
     grid->PrimitiveType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-    grid->IndexCount = grid->Geo->DrawArgs["grid"].IndexCount;
-    grid->StartIndexLocation = grid->Geo->DrawArgs["grid"].StartIndexLocation;
-    grid->BaseVertexLocation = grid->Geo->DrawArgs["grid"].BaseVertexLocation;
+    grid->IndexCount = grid->Geo->DrawArgs["Grid"].IndexCount;
+    grid->StartIndexLocation = grid->Geo->DrawArgs["Grid"].StartIndexLocation;
+    grid->BaseVertexLocation = grid->Geo->DrawArgs["Grid"].BaseVertexLocation;
+    render_layers_[(int)RenderLayer::Opaque].push_back(grid.get());
     all_ritems_.push_back(std::move(grid));
 
     XMMATRIX brick_tex_transform = XMMatrixScaling(1.5f, 2.0f, 1.0f);
@@ -1137,9 +1188,9 @@ void QuatApp::BuildRenderItems () {
         left_cylinder->Mat = materials_["Brick0"].get();
         left_cylinder->Geo = geometries_["ShapeGeo"].get();
         left_cylinder->PrimitiveType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-        left_cylinder->IndexCount = left_cylinder->Geo->DrawArgs["cylinder"].IndexCount;
-        left_cylinder->StartIndexLocation = left_cylinder->Geo->DrawArgs["cylinder"].StartIndexLocation;
-        left_cylinder->BaseVertexLocation = left_cylinder->Geo->DrawArgs["cylinder"].BaseVertexLocation;
+        left_cylinder->IndexCount = left_cylinder->Geo->DrawArgs["Cylinder"].IndexCount;
+        left_cylinder->StartIndexLocation = left_cylinder->Geo->DrawArgs["Cylinder"].StartIndexLocation;
+        left_cylinder->BaseVertexLocation = left_cylinder->Geo->DrawArgs["Cylinder"].BaseVertexLocation;
 
         XMStoreFloat4x4(&right_cylinder->World, right_cyl_world);
         XMStoreFloat4x4(&right_cylinder->TexTransform, brick_tex_transform);
@@ -1147,90 +1198,203 @@ void QuatApp::BuildRenderItems () {
         right_cylinder->Mat = materials_["Brick0"].get();
         right_cylinder->Geo = geometries_["ShapeGeo"].get();
         right_cylinder->PrimitiveType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-        right_cylinder->IndexCount = right_cylinder->Geo->DrawArgs["cylinder"].IndexCount;
-        right_cylinder->StartIndexLocation = right_cylinder->Geo->DrawArgs["cylinder"].StartIndexLocation;
-        right_cylinder->BaseVertexLocation = right_cylinder->Geo->DrawArgs["cylinder"].BaseVertexLocation;
+        right_cylinder->IndexCount = right_cylinder->Geo->DrawArgs["Cylinder"].IndexCount;
+        right_cylinder->StartIndexLocation = right_cylinder->Geo->DrawArgs["Cylinder"].StartIndexLocation;
+        right_cylinder->BaseVertexLocation = right_cylinder->Geo->DrawArgs["Cylinder"].BaseVertexLocation;
 
         XMStoreFloat4x4(&left_sphere->World, left_sphere_world);
         left_sphere->TexTransform = MathHelper::Identity4x4();
         left_sphere->ObjCBIndex = obj_index++;
-        left_sphere->Mat = materials_["Stone0"].get();
+        left_sphere->Mat = materials_["Mirror0"].get();
         left_sphere->Geo = geometries_["ShapeGeo"].get();
         left_sphere->PrimitiveType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-        left_sphere->IndexCount = left_sphere->Geo->DrawArgs["sphere"].IndexCount;
-        left_sphere->StartIndexLocation = left_sphere->Geo->DrawArgs["sphere"].StartIndexLocation;
-        left_sphere->BaseVertexLocation = left_sphere->Geo->DrawArgs["sphere"].BaseVertexLocation;
+        left_sphere->IndexCount = left_sphere->Geo->DrawArgs["Sphere"].IndexCount;
+        left_sphere->StartIndexLocation = left_sphere->Geo->DrawArgs["Sphere"].StartIndexLocation;
+        left_sphere->BaseVertexLocation = left_sphere->Geo->DrawArgs["Sphere"].BaseVertexLocation;
 
         XMStoreFloat4x4(&right_sphere->World, right_sphere_world);
         right_sphere->TexTransform = MathHelper::Identity4x4();
         right_sphere->ObjCBIndex = obj_index++;
-        right_sphere->Mat = materials_["Stone0"].get();
+        right_sphere->Mat = materials_["Mirror0"].get();
         right_sphere->Geo = geometries_["ShapeGeo"].get();
         right_sphere->PrimitiveType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-        right_sphere->IndexCount = right_sphere->Geo->DrawArgs["sphere"].IndexCount;
-        right_sphere->StartIndexLocation = right_sphere->Geo->DrawArgs["sphere"].StartIndexLocation;
-        right_sphere->BaseVertexLocation = right_sphere->Geo->DrawArgs["sphere"].BaseVertexLocation;
+        right_sphere->IndexCount = right_sphere->Geo->DrawArgs["Sphere"].IndexCount;
+        right_sphere->StartIndexLocation = right_sphere->Geo->DrawArgs["Sphere"].StartIndexLocation;
+        right_sphere->BaseVertexLocation = right_sphere->Geo->DrawArgs["Sphere"].BaseVertexLocation;
+
+        render_layers_[(int)RenderLayer::Opaque].push_back(left_cylinder.get());
+        render_layers_[(int)RenderLayer::Opaque].push_back(right_cylinder.get());
+        render_layers_[(int)RenderLayer::Opaque].push_back(left_sphere.get());
+        render_layers_[(int)RenderLayer::Opaque].push_back(right_sphere.get());
 
         all_ritems_.push_back(std::move(left_cylinder));
         all_ritems_.push_back(std::move(right_cylinder));
         all_ritems_.push_back(std::move(left_sphere));
         all_ritems_.push_back(std::move(right_sphere));
     }
-    for (auto & e : all_ritems_)
-        opaque_ritems_.push_back(e.get());
-}
-void QuatApp::LoadTextures () {
-    auto brick = std::make_unique<Texture>();
-    brick->Name = "BrickTex";
-    brick->Filename = L"../textures/bricks2.dds";
-    THROW_IF_FAILED(DirectX::CreateDDSTextureFromFile12(
-        device_.Get(), cmdlist_.Get(),
-        brick->Filename.c_str(), brick->Resource,
-        brick->UploadHeap
-    ));
-    auto stone = std::make_unique<Texture>();
-    stone->Name = "StoneTex";
-    stone->Filename = L"../textures/stone.dds";
-    THROW_IF_FAILED(DirectX::CreateDDSTextureFromFile12(
-        device_.Get(), cmdlist_.Get(),
-        stone->Filename.c_str(), stone->Resource,
-        stone->UploadHeap
-    ));
-    auto tile = std::make_unique<Texture>();
-    tile->Name = "TileTex";
-    tile->Filename = L"../textures/tile.dds";
-    THROW_IF_FAILED(DirectX::CreateDDSTextureFromFile12(
-        device_.Get(), cmdlist_.Get(),
-        tile->Filename.c_str(), tile->Resource,
-        tile->UploadHeap
-    ));
-    auto crate = std::make_unique<Texture>();
-    crate->Name = "CrateTex";
-    crate->Filename = L"../textures/WoodCrate01.dds";
-    THROW_IF_FAILED(DirectX::CreateDDSTextureFromFile12(
-        device_.Get(), cmdlist_.Get(),
-        crate->Filename.c_str(), crate->Resource,
-        crate->UploadHeap
-    ));
-    auto deftex = std::make_unique<Texture>();
-    deftex->Name = "DefaultTex";
-    deftex->Filename = L"../textures/white1x1.dds";
-    THROW_IF_FAILED(DirectX::CreateDDSTextureFromFile12(
-        device_.Get(), cmdlist_.Get(),
-        deftex->Filename.c_str(), deftex->Resource,
-        deftex->UploadHeap
-    ));
 
-    textures_[brick->Name] = std::move(brick);
-    textures_[stone->Name] = std::move(stone);
-    textures_[tile->Name] = std::move(tile);
-    textures_[crate->Name] = std::move(crate);
-    textures_[deftex->Name] = std::move(deftex);
+    for (UINT i = 0; i < skinned_mats_.size(); ++i) {
+        std::string submesh_name = "sm_" + std::to_string(i);
+
+        auto ritem = std::make_unique<RenderItem>();
+
+        // -- reflect to change coord sys from RHS the data was exported out as
+        XMMATRIX model_scale = XMMatrixScaling(0.05f, 0.05f, -0.05f);
+        XMMATRIX model_rot = XMMatrixRotationY(MathHelper::PI);
+        XMMATRIX model_offset = XMMatrixTranslation(0.0f, 0.0f, -5.0f);
+        XMStoreFloat4x4(&ritem->World, model_scale * model_rot * model_offset);
+
+        ritem->TexTransform = MathHelper::Identity4x4();
+        ritem->ObjCBIndex = obj_index++;
+        ritem->Mat = materials_[skinned_mats_[i].Name].get();
+        ritem->Geo = geometries_[skinned_model_filename_].get();
+        ritem->PrimitiveType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+        ritem->IndexCount = ritem->Geo->DrawArgs[submesh_name].IndexCount;
+        ritem->StartIndexLocation = ritem->Geo->DrawArgs[submesh_name].StartIndexLocation;
+        ritem->BaseVertexLocation = ritem->Geo->DrawArgs[submesh_name].BaseVertexLocation;
+
+        // -- all render items for this soldier.m3d instance share the same skinned model instance
+        ritem->SkinnedCBIndex = 0;
+        ritem->SkinnedModelInst = skinned_model_inst_.get();
+
+        render_layers_[(int)RenderLayer::SkinnedOpaque].push_back(ritem.get());
+        all_ritems_.push_back(std::move(ritem));
+    }
 }
-void QuatApp::BuildDescriptorHeaps () {
+void SkinnedMeshDemo::LoadSkinnedModel () {
+    std::vector<M3DLoader::SkinnedVertex> vertices;
+    std::vector<std::uint16_t> indices;
+
+    M3DLoader loader;
+    loader.LoadM3D(skinned_model_filename_, vertices, indices,
+        skinned_subsets_, skinned_mats_, skinned_info_);
+
+    skinned_model_inst_ = std::make_unique<SkinnedModelInstance>();
+    skinned_model_inst_->SkinnedInfo = &skinned_info_;
+    skinned_model_inst_->FinalTransforms.resize(skinned_info_.BoneCount());
+    skinned_model_inst_->ClipName = "Take1";
+    skinned_model_inst_->TimePoint = 0.0f;
+
+    //
+    // -- build corresponding VB and IB:
+
+    UINT const vb_byte_size = (UINT)vertices.size() * sizeof(SkinnedVertex);
+    UINT const ib_byte_size = (UINT)indices.size() * sizeof(std::uint16_t);
+
+    auto geo = std::make_unique<MeshGeometry>();
+    geo->Name = skinned_model_filename_;
+
+    THROW_IF_FAILED(D3DCreateBlob(vb_byte_size, &geo->VertexBufferCpu));
+    CopyMemory(geo->VertexBufferCpu->GetBufferPointer(), vertices.data(), vb_byte_size);
+
+    THROW_IF_FAILED(D3DCreateBlob(ib_byte_size, &geo->IndexBufferCpu));
+    CopyMemory(geo->IndexBufferCpu->GetBufferPointer(), indices.data(), ib_byte_size);
+
+    geo->VertexBufferGpu =
+        D3DUtil::CreateDefaultBuffer(device_.Get(), cmdlist_.Get(), vertices.data(), vb_byte_size, geo->VertexBufferUploader);
+
+    geo->IndexBufferGpu =
+        D3DUtil::CreateDefaultBuffer(device_.Get(), cmdlist_.Get(), indices.data(), ib_byte_size, geo->IndexBufferUploader);
+
+    geo->VertexByteStride = sizeof(SkinnedVertex);
+    geo->VertexBufferByteSize = vb_byte_size;
+    geo->IndexFormat = DXGI_FORMAT_R16_UINT;
+    geo->IndexBufferByteSize = ib_byte_size;
+
+    for (UINT i = 0; i < (UINT)skinned_subsets_.size(); ++i) {
+        SubmeshGeometry submesh;
+        std::string name = "sm_" + std::to_string(i);
+
+        submesh.IndexCount = (UINT)skinned_subsets_[i].FaceCount * 3;
+        submesh.StartIndexLocation = skinned_subsets_[i].FaceStart * 3;
+        submesh.BaseVertexLocation = 0;
+
+        geo->DrawArgs[name] = submesh;
+    }
+    geometries_[geo->Name] = std::move(geo);
+}
+void SkinnedMeshDemo::LoadTextures () {
+    std::vector<std::string> tex_names = {
+        "BricksDiffuseMap",
+        "BricksNormalMap",
+        "TileDiffuseMap",
+        "TileNormalMap",
+        "DefaultDiffuseMap",
+        "DefaultNormalMap",
+        "SkyCubeMap"
+    };
+    std::vector<std::wstring> tex_filenames = {
+        L"../textures/bricks2.dds",
+        L"../textures/bricks2_nmap.dds",
+        L"../textures/tile.dds",
+        L"../textures/tile_nmap.dds",
+        L"../textures/white1x1.dds",
+        L"../textures/default_nmap.dds",
+        L"../textures/desertcube1024.dds",
+    };
+    // -- add skinned model textures to list so we can reference by name later
+    for (UINT i = 0; i < skinned_mats_.size(); ++i) {
+        std::string diffuse_name = skinned_mats_[i].DiffuseMapName;
+        std::string normal_name = skinned_mats_[i].NormalMapName;
+
+        std::wstring diffuse_filename = L"../textures/" + AnsiToWString(diffuse_name);
+        std::wstring normal_filename = L"../textures/" + AnsiToWString(normal_name);
+
+        // -- strip off extension
+        diffuse_name = diffuse_name.substr(0, diffuse_name.find_last_of("."));
+        normal_name = normal_name.substr(0, normal_name.find_last_of("."));
+
+        skinned_texture_names_.push_back(diffuse_name);
+        tex_names.push_back(diffuse_name);
+        tex_filenames.push_back(diffuse_filename);
+
+        skinned_texture_names_.push_back(normal_name);
+        tex_names.push_back(normal_name);
+        tex_filenames.push_back(normal_filename);
+    }
+
+    for (int i = 0; i < (int)tex_names.size(); ++i) {
+        // -- don't create duplicates
+        if (textures_.find(tex_names[i]) == std::end(textures_)) {
+            auto tex_map = std::make_unique<Texture>();
+            tex_map->Name = tex_names[i];
+            tex_map->Filename = tex_filenames[i];
+            THROW_IF_FAILED(DirectX::CreateDDSTextureFromFile12(
+                device_.Get(),
+                cmdlist_.Get(),
+                tex_map->Filename.c_str(),
+                tex_map->Resource,
+                tex_map->UploadHeap
+            ));
+
+            textures_[tex_map->Name] = std::move(tex_map);
+        }
+    }
+}
+CD3DX12_CPU_DESCRIPTOR_HANDLE SkinnedMeshDemo::GetHCpuSrv (int index) const {
+    auto srv = CD3DX12_CPU_DESCRIPTOR_HANDLE(srv_descriptor_heap_->GetCPUDescriptorHandleForHeapStart());
+    srv.Offset(index, cbv_srv_uav_descriptor_size_);
+    return srv;
+}
+CD3DX12_GPU_DESCRIPTOR_HANDLE SkinnedMeshDemo::GetHGpuSrv (int index) const {
+    auto srv = CD3DX12_GPU_DESCRIPTOR_HANDLE(srv_descriptor_heap_->GetGPUDescriptorHandleForHeapStart());
+    srv.Offset(index, cbv_srv_uav_descriptor_size_);
+    return srv;
+}
+CD3DX12_CPU_DESCRIPTOR_HANDLE SkinnedMeshDemo::GetHCpuDsv (int index) const {
+    auto dsv = CD3DX12_CPU_DESCRIPTOR_HANDLE(dsv_heap_->GetCPUDescriptorHandleForHeapStart());
+    dsv.Offset(index, dsv_descriptor_size_);
+    return dsv;
+}
+CD3DX12_CPU_DESCRIPTOR_HANDLE SkinnedMeshDemo::GetHCpuRtv (int index) const {
+    auto rtv = CD3DX12_CPU_DESCRIPTOR_HANDLE(rtv_heap_->GetCPUDescriptorHandleForHeapStart());
+    rtv.Offset(index, dsv_descriptor_size_);
+    return rtv;
+}
+void SkinnedMeshDemo::BuildDescriptorHeaps () {
     assert(cbv_srv_descriptor_size_ > 0);
 
-    UINT const num_descriptors = 5;
+    UINT const num_descriptors = 64;
 
     D3D12_DESCRIPTOR_HEAP_DESC srv_heap_desc = {};
     srv_heap_desc.NumDescriptors = num_descriptors + 1 /* DearImGui */;
@@ -1238,50 +1402,93 @@ void QuatApp::BuildDescriptorHeaps () {
     srv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     THROW_IF_FAILED(device_->CreateDescriptorHeap(&srv_heap_desc, IID_PPV_ARGS(&srv_descriptor_heap_)));
 
-    CD3DX12_CPU_DESCRIPTOR_HANDLE hdescriptor(srv_descriptor_heap_->GetCPUDescriptorHandleForHeapStart());
+    CD3DX12_CPU_DESCRIPTOR_HANDLE hcpu_descriptor(srv_descriptor_heap_->GetCPUDescriptorHandleForHeapStart());
 
-    auto brick = textures_["BrickTex"]->Resource;
-    auto stone = textures_["StoneTex"]->Resource;
-    auto tile = textures_["TileTex"]->Resource;
-    auto crate = textures_["CrateTex"]->Resource;
-    auto deftex = textures_["DefaultTex"]->Resource;
+    std::vector<ComPtr<ID3D12Resource>> tex_list = {
+        textures_["BricksDiffuseMap"]->Resource,
+        textures_["BricksNormalMap"]->Resource,
+        textures_["TileDiffuseMap"]->Resource,
+        textures_["TileNormalMap"]->Resource,
+        textures_["DefaultDiffuseMap"]->Resource,
+        textures_["DefaultNormalMap"]->Resource
+    };
+
+    skinned_srv_heap_start_index_ = (UINT)tex_list.size();
+
+    for (UINT i = 0; i < (UINT)skinned_texture_names_.size(); ++i) {
+        auto tex_resource = textures_[skinned_texture_names_[i]]->Resource;
+        assert(tex_resource != nullptr);
+        tex_list.push_back(tex_resource);
+    }
+
+    auto sky_cubemap = textures_["SkyCubeMap"]->Resource;
 
     D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
     srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srv_desc.Format = brick->GetDesc().Format;
     srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     srv_desc.Texture2D.MostDetailedMip = 0;
-    srv_desc.Texture2D.MipLevels = brick->GetDesc().MipLevels;
     srv_desc.Texture2D.ResourceMinLODClamp = 0.0f;
-    device_->CreateShaderResourceView(brick.Get(), &srv_desc, hdescriptor);
 
-    hdescriptor.Offset(1, cbv_srv_uav_descriptor_size_);
-    srv_desc.Format = stone->GetDesc().Format;
-    srv_desc.Texture2D.MipLevels = stone->GetDesc().MipLevels;
-    device_->CreateShaderResourceView(stone.Get(), &srv_desc, hdescriptor);
+    for (UINT i = 0; i < (UINT)tex_list.size(); ++i) {
+        srv_desc.Format = tex_list[i]->GetDesc().Format;
+        srv_desc.Texture2D.MipLevels = tex_list[i]->GetDesc().MipLevels;
+        device_->CreateShaderResourceView(tex_list[i].Get(), &srv_desc, hcpu_descriptor);
 
-    hdescriptor.Offset(1, cbv_srv_uav_descriptor_size_);
-    srv_desc.Format = tile->GetDesc().Format;
-    srv_desc.Texture2D.MipLevels = tile->GetDesc().MipLevels;
-    device_->CreateShaderResourceView(tile.Get(), &srv_desc, hdescriptor);
+        hcpu_descriptor.Offset(1, cbv_srv_uav_descriptor_size_);
+    }
 
-    hdescriptor.Offset(1, cbv_srv_uav_descriptor_size_);
-    srv_desc.Format = crate->GetDesc().Format;
-    srv_desc.Texture2D.MipLevels = crate->GetDesc().MipLevels;
-    device_->CreateShaderResourceView(crate.Get(), &srv_desc, hdescriptor);
+    srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+    srv_desc.TextureCube.MostDetailedMip = 0;
+    srv_desc.TextureCube.MipLevels = sky_cubemap->GetDesc().MipLevels;
+    srv_desc.TextureCube.ResourceMinLODClamp = 0.0f;
+    srv_desc.Format = sky_cubemap->GetDesc().Format;
+    device_->CreateShaderResourceView(sky_cubemap.Get(), &srv_desc, hcpu_descriptor);
 
-    hdescriptor.Offset(1, cbv_srv_uav_descriptor_size_);
-    srv_desc.Format = deftex->GetDesc().Format;
-    srv_desc.Texture2D.MipLevels = deftex->GetDesc().MipLevels;
-    device_->CreateShaderResourceView(deftex.Get(), &srv_desc, hdescriptor);
+    sky_tex_heap_index_ = (UINT)tex_list.size();
+    shadow_map_heap_index_ = sky_tex_heap_index_ + 1;
+    ssao_heap_index_start_ = shadow_map_heap_index_ + 1;
+    ssao_ambient_map_index_ = ssao_heap_index_start_ + 3;
+    null_cube_srv_index = ssao_heap_index_start_ + 5;
+    null_tex_srv_index1 = null_cube_srv_index + 1;
+    null_tex_srv_index2 = null_tex_srv_index1 + 1;
+
+    auto hcpu_null_srv = GetHCpuSrv(null_cube_srv_index);
+    hgpu_null_srv_ = GetHGpuSrv(null_cube_srv_index);
+
+    device_->CreateShaderResourceView(nullptr, &srv_desc, hcpu_null_srv);
+    hcpu_null_srv.Offset(1, cbv_srv_uav_descriptor_size_);
+
+    srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    srv_desc.Texture2D.MostDetailedMip = 0;
+    srv_desc.Texture2D.MipLevels = 1;
+    srv_desc.Texture2D.ResourceMinLODClamp = 0.0f;
+    device_->CreateShaderResourceView(nullptr, &srv_desc, hcpu_null_srv);
+
+    hcpu_null_srv.Offset(1, cbv_srv_uav_descriptor_size_);
+    device_->CreateShaderResourceView(nullptr, &srv_desc, hcpu_null_srv);
+
+    shadow_map_ptr_->BuildDescriptors(
+        GetHCpuSrv(shadow_map_heap_index_),
+        GetHGpuSrv(shadow_map_heap_index_),
+        GetHCpuDsv(1)
+    );
+    ssao_ptr_->BuildDescriptors(
+        depth_stencil_buffer_.Get(),
+        GetHCpuSrv(ssao_heap_index_start_),
+        GetHGpuSrv(ssao_heap_index_start_),
+        GetHCpuRtv(SwapchainBufferCount),
+        cbv_srv_uav_descriptor_size_,
+        rtv_descriptor_size_
+    );
 }
-void QuatApp::BuildFrameResources () {
+void SkinnedMeshDemo::BuildFrameResources () {
     for (unsigned i = 0; i < g_num_frame_resources; ++i)
-        frame_resources_.push_back(std::make_unique<FrameResource>(
-        device_.Get(), 1, (UINT)all_ritems_.size(), (UINT)materials_.size()
-        ));
+        frame_resources_.push_back(
+            std::make_unique<FrameResource>(device_.Get(), 2, (UINT)all_ritems_.size(), 1, (UINT)materials_.size())
+        );
 }
-std::array<CD3DX12_STATIC_SAMPLER_DESC const, 6>
+std::array<CD3DX12_STATIC_SAMPLER_DESC const, 7>
 QuatApp::GetStaticSamplers() {
     CD3DX12_STATIC_SAMPLER_DESC const point_wrap(
         0,                                  // shader register
@@ -1329,23 +1536,42 @@ QuatApp::GetStaticSamplers() {
         0.0f,                               // mip lod bias
         8                                   // max anisotropy
     );
+    CD3DX12_STATIC_SAMPLER_DESC const shadow_sampler(
+        6,                                                  // shader register
+        D3D12_FILTER_COMPARISON_MIN_LINEAR_MAG_MIP_POINT,   // filter
+        D3D12_TEXTURE_ADDRESS_MODE_BORDER,  // address mode U
+        D3D12_TEXTURE_ADDRESS_MODE_BORDER,  // address mode V
+        D3D12_TEXTURE_ADDRESS_MODE_BORDER,  // address mode W
+        0.0f,                               // mip lod bias
+        16,                                 // max anisotropy
+        D3D12_COMPARISON_FUNC_LESS_EQUAL,
+        D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK
+    );
     return {
         point_wrap, point_clamp,
         linear_wrap, linear_clamp,
-        anisotropic_wrap, anisotropic_clamp
+        anisotropic_wrap, anisotropic_clamp,
+        shadow_sampler
     };
 }
-void QuatApp::BuildRootSignature () {
-    UINT const num_descriptors = 5;
-    CD3DX12_DESCRIPTOR_RANGE tex_table;
-    tex_table.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, num_descriptors, 0, 0);  // (t0, space0) textures
+void SkinnedMeshDemo::BuildRootSignature () {
+    UINT const num_special_maps = 3;    // cubemap(t0), smap(t1), and SSAO map(t2)
+    UINT const num_tex_maps = 48;   // other texture maps (t3, ...)
 
-    CD3DX12_ROOT_PARAMETER slot_root_params[4];
+    CD3DX12_DESCRIPTOR_RANGE tex_table0;
+    tex_table0.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, num_special_maps, 0, 0);  // (t0, space0) textures
+
+    CD3DX12_DESCRIPTOR_RANGE tex_table1;
+    tex_table1.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, num_tex_maps, 3, 0);  // (t3, space0) textures
+
+    CD3DX12_ROOT_PARAMETER slot_root_params[6];
     // -- ordererd from most frequent to least
     slot_root_params[0].InitAsConstantBufferView(0);    // (b0) obj cb
-    slot_root_params[1].InitAsConstantBufferView(1);    // (b1) pass cb
-    slot_root_params[2].InitAsShaderResourceView(0, 1); // (t0, space1) mat buffer
-    slot_root_params[3].InitAsDescriptorTable(1, &tex_table, D3D12_SHADER_VISIBILITY_PIXEL);
+    slot_root_params[1].InitAsConstantBufferView(1);    // (b1) skinned cb
+    slot_root_params[2].InitAsConstantBufferView(2);    // (b2) pass cb
+    slot_root_params[3].InitAsShaderResourceView(0, 1); // (t0, space1) mat buffer
+    slot_root_params[4].InitAsDescriptorTable(1, &tex_table0, D3D12_SHADER_VISIBILITY_PIXEL);
+    slot_root_params[5].InitAsDescriptorTable(1, &tex_table1, D3D12_SHADER_VISIBILITY_PIXEL);
 
     auto static_samplers = GetStaticSamplers();
 
@@ -1372,6 +1598,86 @@ void QuatApp::BuildRootSignature () {
         IID_PPV_ARGS(root_sig_.GetAddressOf())
     ));
 
+}
+void SkinnedMeshDemo::BuildSSAORootSignature () {
+    UINT const num_maps0 = 2;   // normal map(t0), depth map(t1)
+    UINT const num_maps1 = 1;   // random vectors map (t2)
+
+    CD3DX12_DESCRIPTOR_RANGE tex_table0;
+    tex_table0.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, num_maps0, 0, 0);  // (t0, space0) textures
+
+    CD3DX12_DESCRIPTOR_RANGE tex_table1;
+    tex_table1.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, num_maps1, 2, 0);  // (t2, space0) textures
+
+    // -- root paramter can be a table, root descriptor or root constant
+    CD3DX12_ROOT_PARAMETER slot_root_params[4];
+
+    // -- performance tip: order from most frequent to least frequent
+    slot_root_params[0].InitAsConstantBufferView(0);    // SSAO cb
+    slot_root_params[1].InitAsConstants(1, 1);          // root constant cb (g_horizontal_blur)
+    slot_root_params[2].InitAsDescriptorTable(1, &tex_table0, D3D12_SHADER_VISIBILITY_PIXEL);
+    slot_root_params[3].InitAsDescriptorTable(1, &tex_table1, D3D12_SHADER_VISIBILITY_PIXEL);
+
+    CD3DX12_STATIC_SAMPLER_DESC const point_clamp(
+        0,  // shader register (s0)
+        D3D12_FILTER_MIN_MAG_MIP_POINT, // filter
+        D3D12_TEXTURE_ADDRESS_MODE_CLAMP, // address U
+        D3D12_TEXTURE_ADDRESS_MODE_CLAMP, // address V
+        D3D12_TEXTURE_ADDRESS_MODE_CLAMP // address W
+    );
+    CD3DX12_STATIC_SAMPLER_DESC const linear_clamp(
+        1,  // shader register (s1)
+        D3D12_FILTER_MIN_MAG_MIP_LINEAR, // filter
+        D3D12_TEXTURE_ADDRESS_MODE_CLAMP, // address U
+        D3D12_TEXTURE_ADDRESS_MODE_CLAMP, // address V
+        D3D12_TEXTURE_ADDRESS_MODE_CLAMP // address W
+    );
+    CD3DX12_STATIC_SAMPLER_DESC const depth_sam(
+        2,  // shader register (s2)
+        D3D12_FILTER_MIN_MAG_MIP_LINEAR, // filter
+        D3D12_TEXTURE_ADDRESS_MODE_BORDER, // address U
+        D3D12_TEXTURE_ADDRESS_MODE_BORDER, // address V
+        D3D12_TEXTURE_ADDRESS_MODE_BORDER, // address W
+        0.0f,   // mip lod bias
+        0,  // max anisotropy
+        D3D12_COMPARISON_FUNC_EQUAL,
+        D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE
+    );
+    CD3DX12_STATIC_SAMPLER_DESC const linear_wrap(
+        3,  // shader register (s3)
+        D3D12_FILTER_MIN_MAG_MIP_LINEAR, // filter
+        D3D12_TEXTURE_ADDRESS_MODE_WRAP, // address U
+        D3D12_TEXTURE_ADDRESS_MODE_WRAP, // address V
+        D3D12_TEXTURE_ADDRESS_MODE_WRAP // address W
+    );
+    std::array<CD3DX12_STATIC_SAMPLER_DESC, 4> static_samplers = {
+        point_clamp, linear_clamp, depth_sam, linear_wrap
+    };
+
+    // -- a root sig is just an array of root params
+    CD3DX12_ROOT_SIGNATURE_DESC root_sig_desc(
+        _countof(slot_root_params), slot_root_params,
+        (UINT)static_samplers.size(), static_samplers.data(),
+        D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+    );
+
+    // -- build a root sig
+    ComPtr<ID3DBlob> serialized_root_sig = nullptr;
+    ComPtr<ID3DBlob> error_blob = nullptr;
+    HRESULT hr = D3D12SerializeRootSignature(&root_sig_desc, D3D_ROOT_SIGNATURE_VERSION_1,
+        serialized_root_sig.GetAddressOf(), error_blob.GetAddressOf());
+
+    if (error_blob != nullptr) {
+        ::OutputDebugStringA((char *)error_blob->GetBufferPointer());
+    }
+    THROW_IF_FAILED(hr);
+
+    THROW_IF_FAILED(device_->CreateRootSignature(
+        0, // node mask
+        serialized_root_sig->GetBufferPointer(),
+        serialized_root_sig->GetBufferSize(),
+        IID_PPV_ARGS(ssao_root_sig_.GetAddressOf())
+    ));
 }
 void QuatApp::BuildShaderAndInputLayout () {
     D3D_SHADER_MACRO const alphatest_defines [] {
