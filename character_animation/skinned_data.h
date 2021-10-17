@@ -44,7 +44,7 @@ private:
     std::unordered_map<std::string, AnimationClip> animations_;
 
 public:
-    UINT BoneCount () const { return bone_hierarchy_.size(); }
+    UINT BoneCount () const { return (UINT)bone_hierarchy_.size(); }
 
     float GetClipStartTime (std::string const & clip_name) const;
     float GetClipEndTime (std::string const & clip_name) const;

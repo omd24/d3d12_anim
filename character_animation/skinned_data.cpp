@@ -107,7 +107,7 @@ void SkinnedData::GetFinalTransforms (
     float time_point,
     std::vector<DirectX::XMFLOAT4X4> & fianl_transforms
 ) const {
-    UINT num_bones = bone_offsets_.size();
+    UINT num_bones = (UINT)bone_offsets_.size();
 
     std::vector<XMFLOAT4X4> to_parent_transforms(num_bones);
 

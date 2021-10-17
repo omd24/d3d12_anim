@@ -432,7 +432,7 @@ void SkinnedMeshDemo::BuildRtvAndDsvDescriptorHeaps () {
     dsv_heap_desc.NumDescriptors = 2;
     dsv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
     dsv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-    dsv_heap_desc.NodeMask - 0;
+    dsv_heap_desc.NodeMask = 0;
     THROW_IF_FAILED(device_->CreateDescriptorHeap(
         &dsv_heap_desc, IID_PPV_ARGS(dsv_heap_.GetAddressOf())
     ));
@@ -543,6 +543,9 @@ void SkinnedMeshDemo::DrawSceneToShadowMap () {
     cmdlist_->SetGraphicsRootConstantBufferView(2, pass_cb_address);
 
     cmdlist_->SetPipelineState(psos_["ShadowOpaque"].Get());
+    DrawRenderItems(cmdlist_.Get(), render_layers_[(int)RenderLayer::Opaque]);
+
+    cmdlist_->SetPipelineState(psos_["SkinnedShadowOpaque"].Get());
     DrawRenderItems(cmdlist_.Get(), render_layers_[(int)RenderLayer::SkinnedOpaque]);
 
     cmdlist_->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
@@ -1489,7 +1492,7 @@ void SkinnedMeshDemo::BuildFrameResources () {
         );
 }
 std::array<CD3DX12_STATIC_SAMPLER_DESC const, 7>
-QuatApp::GetStaticSamplers() {
+SkinnedMeshDemo::GetStaticSamplers() {
     CD3DX12_STATIC_SAMPLER_DESC const point_wrap(
         0,                                  // shader register
         D3D12_FILTER_MIN_MAG_MIP_POINT,     // filter
@@ -1679,20 +1682,59 @@ void SkinnedMeshDemo::BuildSSAORootSignature () {
         IID_PPV_ARGS(ssao_root_sig_.GetAddressOf())
     ));
 }
-void QuatApp::BuildShaderAndInputLayout () {
+void SkinnedMeshDemo::BuildShaderAndInputLayout () {
     D3D_SHADER_MACRO const alphatest_defines [] {
         "ALPHATEST", "1", NULL, NULL
     };
+    D3D_SHADER_MACRO const skinned_defines [] {
+        "SKINNED", "1", NULL, NULL
+    };
+
     shaders_["StandardVS"] = D3DUtil::CompileShader(L"shaders\\default.hlsl", nullptr, "VS", "vs_5_1");
+    shaders_["SkinnedVS"] = D3DUtil::CompileShader(L"shaders\\default.hlsl", skinned_defines, "VS", "vs_5_1");
     shaders_["OpaquePS"] = D3DUtil::CompileShader(L"shaders\\default.hlsl", nullptr, "PS", "ps_5_1");
+
+    shaders_["ShadowVS"] = D3DUtil::CompileShader(L"shaders\\shadows.hlsl", nullptr, "VS", "vs_5_1");
+    shaders_["SkinnedShadowVS"] = D3DUtil::CompileShader(L"shaders\\shadows.hlsl", skinned_defines, "VS", "vs_5_1");
+    shaders_["ShadowOpaquePS"] = D3DUtil::CompileShader(L"shaders\\shadows.hlsl", nullptr, "PS", "ps_5_1");
+    shaders_["ShadowAlphatestedPS"] = D3DUtil::CompileShader(L"shaders\\shadows.hlsl", alphatest_defines, "PS", "ps_5_1");
+
+    shaders_["DebugVS"] = D3DUtil::CompileShader(L"shaders\\shadow_debug.hlsl", nullptr, "VS", "vs_5_1");
+    shaders_["DebugPS"] = D3DUtil::CompileShader(L"shaders\\shadow_debug.hlsl", nullptr, "PS", "ps_5_1");
+
+    shaders_["DrawNormalsVS"] = D3DUtil::CompileShader(L"shaders\\draw_normals.hlsl", nullptr, "VS", "vs_5_1");
+    shaders_["SkinnedDrawNormalsVS"] = D3DUtil::CompileShader(L"shaders\\draw_normals.hlsl", skinned_defines, "VS", "ps_5_1");
+    shaders_["DrawNormalsPS"] = D3DUtil::CompileShader(L"shaders\\draw_normals.hlsl", nullptr, "PS", "ps_5_1");
+
+    shaders_["SSAOVS"] = D3DUtil::CompileShader(L"shaders\\ssao.hlsl", nullptr, "VS", "vs_5_1");
+    shaders_["SSAOPS"] = D3DUtil::CompileShader(L"shaders\\ssao.hlsl", nullptr, "PS", "ps_5_1");
+
+    shaders_["SSAOBlurVS"] = D3DUtil::CompileShader(L"shaders\\ssao_blur.hlsl", nullptr, "VS", "vs_5_1");
+    shaders_["SSAOBlurPS"] = D3DUtil::CompileShader(L"shaders\\ssao_blur.hlsl", nullptr, "PS", "ps_5_1");
+
+    shaders_["SkyVS"] = D3DUtil::CompileShader(L"shaders\\sky.hlsl", nullptr, "VS", "vs_5_1");
+    shaders_["SkyPS"] = D3DUtil::CompileShader(L"shaders\\sky.hlsl", nullptr, "PS", "ps_5_1");
+
 
     input_layout_ = {
         {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
         {"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
         {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        {"TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+    };
+    skinned_input_layout_ = {
+        {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        {"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        {"TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        {"WEIGHTS", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 44, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        {"BONEINDICES", 0, DXGI_FORMAT_R8G8B8A8_UINT, 0, 56, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
     };
 }
-void QuatApp::BuildPSOs () {
+void SkinnedMeshDemo::BuildPSOs () {
+    //
+    // -- opaque PSO:
+    //
     D3D12_GRAPHICS_PIPELINE_STATE_DESC opaque_pso_desc;
     ZeroMemory(&opaque_pso_desc, sizeof(D3D12_GRAPHICS_PIPELINE_STATE_DESC));
     opaque_pso_desc.InputLayout = {input_layout_.data(), (UINT)input_layout_.size()};
@@ -1711,44 +1753,117 @@ void QuatApp::BuildPSOs () {
     opaque_pso_desc.SampleDesc.Count = msaa_4x_state_ ? 4 : 1;
     opaque_pso_desc.SampleDesc.Quality = msaa_4x_state_ ? (msaa_4x_quality_ - 1) : 0;
     opaque_pso_desc.DSVFormat = depth_stencil_format_;
-    THROW_IF_FAILED(device_->CreateGraphicsPipelineState(
-        &opaque_pso_desc, IID_PPV_ARGS(&psos_["Opaque"])
-    ));
-
-}
-
-
-void QuatApp::DefineSkullAnimation () {
-    XMVECTOR q0 = XMQuaternionRotationAxis(XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f), XMConvertToRadians(30.0f));
-    XMVECTOR q1 = XMQuaternionRotationAxis(XMVectorSet(1.0f, 1.0f, 2.0f, 0.0f), XMConvertToRadians(45.0f));
-    XMVECTOR q2 = XMQuaternionRotationAxis(XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f), XMConvertToRadians(-30.0f));
-    XMVECTOR q3 = XMQuaternionRotationAxis(XMVectorSet(1.0f, 0.0f, 0.0f, 0.0f), XMConvertToRadians(70.0f));
-
-    skull_animation_.Keyframes.resize(5);
-    skull_animation_.Keyframes[0].TimePoint = 0.0f;
-    skull_animation_.Keyframes[0].Translation = XMFLOAT3(0.0f, 0.0f, 0.0f);
-    skull_animation_.Keyframes[0].Scale = XMFLOAT3(0.25f, 0.25f, 0.25f);
-    XMStoreFloat4(&skull_animation_.Keyframes[0].RotationQuat, q0);
-
-    skull_animation_.Keyframes[1].TimePoint = 2.0f;
-    skull_animation_.Keyframes[1].Translation = XMFLOAT3(0.0f, 2.0f, 10.0f);
-    skull_animation_.Keyframes[1].Scale = XMFLOAT3(0.5f, 0.5f, 0.5f);
-    XMStoreFloat4(&skull_animation_.Keyframes[1].RotationQuat, q1);
-
-    skull_animation_.Keyframes[2].TimePoint = 4.0f;
-    skull_animation_.Keyframes[2].Translation = XMFLOAT3(7.0f, 0.0f, 0.0f);
-    skull_animation_.Keyframes[2].Scale = XMFLOAT3(0.25f, 0.25f, 0.25f);
-    XMStoreFloat4(&skull_animation_.Keyframes[2].RotationQuat, q2);
-
-    skull_animation_.Keyframes[3].TimePoint = 6.0f;
-    skull_animation_.Keyframes[3].Translation = XMFLOAT3(0.0f, 1.0f, -10.0f);
-    skull_animation_.Keyframes[3].Scale = XMFLOAT3(0.5f, 0.5f, 0.5f);
-    XMStoreFloat4(&skull_animation_.Keyframes[3].RotationQuat, q3);
-
-    skull_animation_.Keyframes[4].TimePoint = 8.0f;
-    skull_animation_.Keyframes[4].Translation = XMFLOAT3(0.0f, 0.0f, 0.0f);
-    skull_animation_.Keyframes[4].Scale = XMFLOAT3(0.25f, 0.25f, 0.25f);
-    XMStoreFloat4(&skull_animation_.Keyframes[4].RotationQuat, q0);
+    THROW_IF_FAILED(device_->CreateGraphicsPipelineState(&opaque_pso_desc, IID_PPV_ARGS(&psos_["Opaque"])));
+    //
+    // -- skinned pass PSO:
+    //
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC skinned_opaque_pso_desc = opaque_pso_desc;
+    skinned_opaque_pso_desc.InputLayout = {skinned_input_layout_.data(), (UINT)skinned_input_layout_.size()};
+    skinned_opaque_pso_desc.VS.pShaderBytecode = shaders_["SkinnedVS"]->GetBufferPointer();
+    skinned_opaque_pso_desc.VS.BytecodeLength = shaders_["SkinnedVS"]->GetBufferSize();
+    skinned_opaque_pso_desc.PS.pShaderBytecode = shaders_["OpaquePS"]->GetBufferPointer();
+    skinned_opaque_pso_desc.PS.BytecodeLength = shaders_["OpaquePS"]->GetBufferSize();
+    THROW_IF_FAILED(device_->CreateGraphicsPipelineState(&skinned_opaque_pso_desc, IID_PPV_ARGS(&psos_["SkinnedOpaque"])));
+    //
+    // -- shadow map pass pso:
+    //
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC smap_pso_desc = opaque_pso_desc;
+    smap_pso_desc.RasterizerState.DepthBias = 100000;
+    smap_pso_desc.RasterizerState.DepthBiasClamp = 0.0f;
+    smap_pso_desc.RasterizerState.SlopeScaledDepthBias = 1.0f;
+    smap_pso_desc.pRootSignature = root_sig_.Get();
+    smap_pso_desc.VS.pShaderBytecode = shaders_["ShadowVS"]->GetBufferPointer();
+    smap_pso_desc.VS.BytecodeLength = shaders_["ShadowVS"]->GetBufferSize();
+    smap_pso_desc.PS.pShaderBytecode = shaders_["ShadowOpaquePS"]->GetBufferPointer();
+    smap_pso_desc.PS.BytecodeLength = shaders_["ShadowOpaquePS"]->GetBufferSize();
+    smap_pso_desc.NumRenderTargets = 0;
+    smap_pso_desc.RTVFormats[0] = DXGI_FORMAT_UNKNOWN;  // shadow map pass doesn't have a render target
+    THROW_IF_FAILED(device_->CreateGraphicsPipelineState(&smap_pso_desc, IID_PPV_ARGS(&psos_["ShadowOpaque"])));
+    //
+    // -- skinned shadow mapping pass pso:
+    //
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC skinned_smap_pso_desc = smap_pso_desc;
+    skinned_smap_pso_desc.InputLayout = {skinned_input_layout_.data(), (UINT)skinned_input_layout_.size()};
+    skinned_smap_pso_desc.VS.pShaderBytecode = shaders_["SkinnedShadowVS"]->GetBufferPointer();
+    skinned_smap_pso_desc.VS.BytecodeLength = shaders_["SkinnedShadowVS"]->GetBufferSize();
+    skinned_smap_pso_desc.PS.pShaderBytecode = shaders_["ShadowOpaquePS"]->GetBufferPointer();
+    skinned_smap_pso_desc.PS.BytecodeLength = shaders_["ShadowOpaquePS"]->GetBufferSize();
+    THROW_IF_FAILED(device_->CreateGraphicsPipelineState(&skinned_smap_pso_desc, IID_PPV_ARGS(&psos_["SkinnedShadowOpaque"])));
+    //
+    // -- debug layer PSO:
+    //
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC debug_pso_desc = opaque_pso_desc;
+    debug_pso_desc.pRootSignature = root_sig_.Get();
+    debug_pso_desc.VS.pShaderBytecode = shaders_["DebugVS"]->GetBufferPointer();
+    debug_pso_desc.VS.BytecodeLength = shaders_["DebugVS"]->GetBufferSize();
+    debug_pso_desc.PS.pShaderBytecode = shaders_["DebugPS"]->GetBufferPointer();
+    debug_pso_desc.PS.BytecodeLength = shaders_["DebugPS"]->GetBufferSize();
+    THROW_IF_FAILED(device_->CreateGraphicsPipelineState(&debug_pso_desc, IID_PPV_ARGS(&psos_["Debug"])));
+    //
+    // -- PSO for drawing normals:
+    //
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC draw_normals_pso_desc = opaque_pso_desc;
+    draw_normals_pso_desc.VS.pShaderBytecode = shaders_["DrawNormalsVS"]->GetBufferPointer();
+    draw_normals_pso_desc.VS.BytecodeLength = shaders_["DrawNormalsVS"]->GetBufferSize();
+    draw_normals_pso_desc.PS.pShaderBytecode = shaders_["DrawNormalsPS"]->GetBufferPointer();
+    draw_normals_pso_desc.PS.BytecodeLength = shaders_["DrawNormalsPS"]->GetBufferSize();
+    draw_normals_pso_desc.RTVFormats[0] = SSAO::NormalMapFormat;
+    draw_normals_pso_desc.SampleDesc.Count = 1;
+    draw_normals_pso_desc.SampleDesc.Quality = 0;
+    draw_normals_pso_desc.DSVFormat = depth_stencil_format_;
+    THROW_IF_FAILED(device_->CreateGraphicsPipelineState(&draw_normals_pso_desc, IID_PPV_ARGS(&psos_["DrawNormals"])));
+    //
+    // -- Skinned draw normals pso:
+    //
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC skinned_draw_normals_pso_ds = draw_normals_pso_desc;
+    skinned_draw_normals_pso_ds.InputLayout = {skinned_input_layout_.data(), (UINT)skinned_input_layout_.size()};
+    skinned_draw_normals_pso_ds.VS.pShaderBytecode = shaders_["SkinnedDrawNormalsVS"]->GetBufferPointer();
+    skinned_draw_normals_pso_ds.VS.BytecodeLength = shaders_["SkinnedDrawNormalsVS"]->GetBufferSize();
+    skinned_draw_normals_pso_ds.PS.pShaderBytecode = shaders_["DrawNormalsPS"]->GetBufferPointer();
+    skinned_draw_normals_pso_ds.PS.BytecodeLength = shaders_["DrawNormalsPS"]->GetBufferSize();
+    THROW_IF_FAILED(device_->CreateGraphicsPipelineState(&skinned_draw_normals_pso_ds, IID_PPV_ARGS(&psos_["SkinnedDrawNormals"])));
+    //
+    // -- SSAO PSO:
+    //
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC ssao_pso_desc = opaque_pso_desc;
+    ssao_pso_desc.InputLayout = {nullptr, 0};
+    ssao_pso_desc.pRootSignature = ssao_root_sig_.Get();
+    ssao_pso_desc.VS.pShaderBytecode = shaders_["SSAOVS"]->GetBufferPointer();
+    ssao_pso_desc.VS.BytecodeLength = shaders_["SSAOVS"]->GetBufferSize();
+    ssao_pso_desc.PS.pShaderBytecode = shaders_["SSAOPS"]->GetBufferPointer();
+    ssao_pso_desc.PS.BytecodeLength = shaders_["SSAOPS"]->GetBufferSize();
+    ssao_pso_desc.DepthStencilState.DepthEnable = false; // ssao doesn't need depth buffer
+    ssao_pso_desc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+    ssao_pso_desc.RTVFormats[0] = SSAO::AmbientMapFormat;
+    ssao_pso_desc.SampleDesc.Count = 1;
+    ssao_pso_desc.SampleDesc.Quality = 0;
+    ssao_pso_desc.DSVFormat = DXGI_FORMAT_UNKNOWN;
+    THROW_IF_FAILED(device_->CreateGraphicsPipelineState(&ssao_pso_desc, IID_PPV_ARGS(&psos_["SSAO"])));
+    //
+    // -- SSAO blur PSO:
+    //
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC ssao_blur_pso_desc = ssao_pso_desc;
+    ssao_blur_pso_desc.InputLayout = {nullptr, 0};
+    ssao_blur_pso_desc.pRootSignature = ssao_root_sig_.Get();
+    ssao_blur_pso_desc.VS.pShaderBytecode = shaders_["SSAOBlurVS"]->GetBufferPointer();
+    ssao_blur_pso_desc.VS.BytecodeLength = shaders_["SSAOBlurVS"]->GetBufferSize();
+    ssao_blur_pso_desc.PS.pShaderBytecode = shaders_["SSAOBlurPS"]->GetBufferPointer();
+    ssao_blur_pso_desc.PS.BytecodeLength = shaders_["SSAOBlurPS"]->GetBufferSize();
+    THROW_IF_FAILED(device_->CreateGraphicsPipelineState(&ssao_blur_pso_desc, IID_PPV_ARGS(&psos_["SSAOBlur"])));
+    //
+    // -- Sky PSO:
+    //
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC sky_pso_desc = opaque_pso_desc;
+    sky_pso_desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE; // camera is inside the sky sphere so turn of culling
+    // NOTE(omid): make sure the depth func is less-equal and not just less, 
+    // otherwise normalized depth values at z=1 (NDC) will fail depth test if dep buffer was cleared to 1
+    sky_pso_desc.DepthStencilState.DepthEnable = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+    sky_pso_desc.pRootSignature = root_sig_.Get();
+    sky_pso_desc.VS.pShaderBytecode = shaders_["SkyVS"]->GetBufferPointer();
+    sky_pso_desc.VS.BytecodeLength = shaders_["SkyVS"]->GetBufferSize();
+    sky_pso_desc.PS.pShaderBytecode = shaders_["SkyPS"]->GetBufferPointer();
+    sky_pso_desc.PS.BytecodeLength = shaders_["SkyPS"]->GetBufferSize();
+    THROW_IF_FAILED(device_->CreateGraphicsPipelineState(&sky_pso_desc, IID_PPV_ARGS(&psos_["Sky"])));
 }
 
 //
