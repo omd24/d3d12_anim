@@ -24,7 +24,7 @@ VertexOut VS (VertexIn vin) {
     weights[2] = vin.BoneWeights.z;
     weights[3] = 1.0f - weights[0] - weights[1] - weights[2];
 
-    float3 pos_local = flaot3(0.0f, 0.0f, 0.0f);
+    float3 pos_local = float3(0.0f, 0.0f, 0.0f);
     for (int i = 0; i < 4; ++i) {
         pos_local += weights[i] * mul(float4(vin.PosL, 1.0f), g_bone_transforms[vin.BoneIndices[i]]).xyz;
     }

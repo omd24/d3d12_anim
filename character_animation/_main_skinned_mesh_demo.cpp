@@ -164,6 +164,7 @@ public: // -- helper getters
         ImGuiWindowFlags window_flags;
         bool beginwnd, anim_widgets;
         int selected_mat;
+        bool initialized = false;
     } imgui_params_ = {};
 
 
@@ -244,7 +245,7 @@ SkinnedMeshDemo::~SkinnedMeshDemo () {
         FlushCmdQueue();
 
     // -- cleanup imgui
-    ImGuiDeinit();
+        ImGuiDeinit();
 }
 bool SkinnedMeshDemo::Init () {
     if (!D3DApp::Init())
@@ -331,11 +332,14 @@ void SkinnedMeshDemo::ImGuiInit () {
     imgui_params_.window_flags |= ImGuiWindowFlags_NoNav;
     imgui_params_.window_flags |= ImGuiWindowFlags_NoBringToFrontOnFocus;
     //imgui_params_.window_flags |= ImGuiWindowFlags_NoResize;
+
+    imgui_params_.initialized = true;
 }
 void SkinnedMeshDemo::ImGuiDeinit () {
     ImGui_ImplDX12_Shutdown();
     ImGui_ImplWin32_Shutdown();
-    ImGui::DestroyContext();
+    if (imgui_params_.initialized)
+        ImGui::DestroyContext();
 }
 void SkinnedMeshDemo::ImGuiUpdate () {
     ImGui_ImplDX12_NewFrame();
@@ -401,7 +405,7 @@ void SkinnedMeshDemo::ImGuiUpdate () {
         XMStoreFloat4(&skull_animation_.Keyframes[2].RotationQuat, q2);
         XMStoreFloat4(&skull_animation_.Keyframes[3].RotationQuat, q3);
         XMStoreFloat4(&skull_animation_.Keyframes[4].RotationQuat, q0);
-    }
+}
 #endif // 0
 
     ImGui::Separator();
@@ -1391,11 +1395,11 @@ CD3DX12_CPU_DESCRIPTOR_HANDLE SkinnedMeshDemo::GetHCpuDsv (int index) const {
 }
 CD3DX12_CPU_DESCRIPTOR_HANDLE SkinnedMeshDemo::GetHCpuRtv (int index) const {
     auto rtv = CD3DX12_CPU_DESCRIPTOR_HANDLE(rtv_heap_->GetCPUDescriptorHandleForHeapStart());
-    rtv.Offset(index, dsv_descriptor_size_);
+    rtv.Offset(index, rtv_descriptor_size_);
     return rtv;
 }
 void SkinnedMeshDemo::BuildDescriptorHeaps () {
-    assert(cbv_srv_descriptor_size_ > 0);
+    assert(cbv_srv_uav_descriptor_size_ > 0);
 
     UINT const num_descriptors = 64;
 
@@ -1703,7 +1707,7 @@ void SkinnedMeshDemo::BuildShaderAndInputLayout () {
     shaders_["DebugPS"] = D3DUtil::CompileShader(L"shaders\\shadow_debug.hlsl", nullptr, "PS", "ps_5_1");
 
     shaders_["DrawNormalsVS"] = D3DUtil::CompileShader(L"shaders\\draw_normals.hlsl", nullptr, "VS", "vs_5_1");
-    shaders_["SkinnedDrawNormalsVS"] = D3DUtil::CompileShader(L"shaders\\draw_normals.hlsl", skinned_defines, "VS", "ps_5_1");
+    shaders_["SkinnedDrawNormalsVS"] = D3DUtil::CompileShader(L"shaders\\draw_normals.hlsl", skinned_defines, "VS", "vs_5_1");
     shaders_["DrawNormalsPS"] = D3DUtil::CompileShader(L"shaders\\draw_normals.hlsl", nullptr, "PS", "ps_5_1");
 
     shaders_["SSAOVS"] = D3DUtil::CompileShader(L"shaders\\ssao.hlsl", nullptr, "VS", "vs_5_1");
