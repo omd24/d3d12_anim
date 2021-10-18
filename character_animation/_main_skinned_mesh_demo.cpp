@@ -154,7 +154,10 @@ private:
     bool mouse_active_ = true;
 
 public: // -- helpers
-    static constexpr int DescriptorCount = 64;
+    static constexpr int TotalDescriptorCount = 64;
+    static constexpr int DiffuseAndNormalTextureCount = 6;
+    static constexpr int SkyCubeMapCount = 4;
+    UINT SkinnedDiffusedAndNormalTextureCount = 0;
 
     ID3D12DescriptorHeap * GetSrvHeap () { return srv_descriptor_heap_.Get(); }
     UINT GetCbvSrvUavDescriptorSize () { return cbv_srv_uav_descriptor_size_; }
@@ -165,10 +168,11 @@ public: // -- helpers
         bool * ptr_open;
         ImGuiWindowFlags window_flags;
         bool beginwnd, anim_widgets;
-        int selected_mat;
+        int selected_mat = 0;
         bool initialized = false;
     } imgui_params_ = {};
 
+    static constexpr bool EnableImGui = true;
 
 public:
     SkinnedMeshDemo (HINSTANCE instance);
@@ -247,7 +251,8 @@ SkinnedMeshDemo::~SkinnedMeshDemo () {
         FlushCmdQueue();
 
     // -- cleanup imgui
-    ImGuiDeinit();
+    if (EnableImGui)
+        ImGuiDeinit();
 }
 bool SkinnedMeshDemo::Init () {
     if (!D3DApp::Init())
@@ -286,7 +291,8 @@ bool SkinnedMeshDemo::Init () {
     FlushCmdQueue();
 
     // -- setup DearImGui
-    ImGuiInit();
+    if (EnableImGui)
+        ImGuiInit();
 
     return true;
 }
@@ -309,12 +315,12 @@ void SkinnedMeshDemo::ImGuiInit () {
     // calculate imgui cpu & gpu handles on location on srv_heap
     D3D12_CPU_DESCRIPTOR_HANDLE imgui_cpu_handle = GetSrvHeap()->GetCPUDescriptorHandleForHeapStart();
     imgui_cpu_handle.ptr += ((size_t)GetCbvSrvUavDescriptorSize() * (
-        + DescriptorCount /* number of textures */
+        +TotalDescriptorCount /* number of textures */
         ));
 
     D3D12_GPU_DESCRIPTOR_HANDLE imgui_gpu_handle = GetSrvHeap()->GetGPUDescriptorHandleForHeapStart();
     imgui_gpu_handle.ptr += ((size_t)GetCbvSrvUavDescriptorSize() * (
-        + DescriptorCount /* number of textures */
+        +TotalDescriptorCount /* number of textures */
         ));
 
     // Setup Platform/Renderer backends
@@ -350,65 +356,9 @@ void SkinnedMeshDemo::ImGuiUpdate () {
     ImGui::Begin("Settings", imgui_params_.ptr_open, imgui_params_.window_flags);
     imgui_params_.beginwnd = ImGui::IsItemActive();
 
-#if 0
-    if (ImGui::CollapsingHeader("Keyframes Data")) {
-        //imgui_params_.anim_widgets = true;
-        static float angle0 = 30.0f;
-        static float angle1 = 45.0f;
-        static float angle2 = -30.0f;
-        static float angle3 = 70.0f;
-        static float angle4 = 70.0f;
-        static XMFLOAT4 axis0 = {0.0f, 1.0f, 0.0f, 0.0f};
-        static XMFLOAT4 axis1 = {1.0f, 1.0f, 2.0f, 0.0f};
-        static XMFLOAT4 axis2 = {0.0f, 1.0f, 0.0f, 0.0f};
-        static XMFLOAT4 axis3 = {1.0f, 0.0f, 0.0f, 0.0f};
-        static XMFLOAT4 axis4 = {1.0f, 0.0f, 0.0f, 0.0f};
-        if (ImGui::TreeNode("Keyframe 0")) {
-            ImGui::ColorEdit3("Translation", (float*)&skull_animation_.Keyframes[0].Translation, ImGuiColorEditFlags_Float);
-            ImGui::ColorEdit3("Scale", (float*)&skull_animation_.Keyframes[0].Scale, ImGuiColorEditFlags_Float);
-            ImGui::DragFloat("Rotation Angle", &angle0, 1.0f, 0.0f, 90.0f);
-            ImGui::ColorEdit3("Rotation Axis", (float*)&axis0, ImGuiColorEditFlags_Float);
-            ImGui::TreePop();
-        }
-        if (ImGui::TreeNode("Keyframe 1")) {
-            ImGui::ColorEdit3("Translation", (float*)&skull_animation_.Keyframes[1].Translation, ImGuiColorEditFlags_Float);
-            ImGui::ColorEdit3("Scale", (float*)&skull_animation_.Keyframes[1].Scale, ImGuiColorEditFlags_Float);
-            ImGui::DragFloat("Rotation Angle", &angle1, 1.0f, 0.0f, 90.0f);
-            ImGui::ColorEdit3("Rotation Axis", (float*)&axis1, ImGuiColorEditFlags_Float);
-            ImGui::TreePop();
-        }
-        if (ImGui::TreeNode("Keyframe 2")) {
-            ImGui::ColorEdit3("Translation", (float*)&skull_animation_.Keyframes[2].Translation, ImGuiColorEditFlags_Float);
-            ImGui::ColorEdit3("Scale", (float*)&skull_animation_.Keyframes[2].Scale, ImGuiColorEditFlags_Float);
-            ImGui::DragFloat("Rotation Angle", &angle2, 1.0f, 0.0f, 90.0f);
-            ImGui::ColorEdit3("Rotation Axis", (float*)&axis2, ImGuiColorEditFlags_Float);
-            ImGui::TreePop();
-        }
-        if (ImGui::TreeNode("Keyframe 3")) {
-            ImGui::ColorEdit3("Translation", (float*)&skull_animation_.Keyframes[3].Translation, ImGuiColorEditFlags_Float);
-            ImGui::ColorEdit3("Scale", (float*)&skull_animation_.Keyframes[3].Scale, ImGuiColorEditFlags_Float);
-            ImGui::DragFloat("Rotation Angle", &angle3, 1.0f, 0.0f, 90.0f);
-            ImGui::ColorEdit3("Rotation Axis", (float*)&axis3, ImGuiColorEditFlags_Float);
-            ImGui::TreePop();
-        }
-        if (ImGui::TreeNode("Keyframe 4")) {
-            ImGui::ColorEdit3("Translation", (float*)&skull_animation_.Keyframes[4].Translation, ImGuiColorEditFlags_Float);
-            ImGui::ColorEdit3("Scale", (float*)&skull_animation_.Keyframes[4].Scale, ImGuiColorEditFlags_Float);
-            ImGui::DragFloat("Rotation Angle", &angle4, 1.0f, 0.0f, 90.0f);
-            ImGui::ColorEdit3("Rotation Axis", (float*)&axis4, ImGuiColorEditFlags_Float);
-            ImGui::TreePop();
-        }
-        XMVECTOR q0 = XMQuaternionRotationAxis(XMLoadFloat4(&axis0), XMConvertToRadians(angle0));
-        XMVECTOR q1 = XMQuaternionRotationAxis(XMLoadFloat4(&axis1), XMConvertToRadians(angle1));
-        XMVECTOR q2 = XMQuaternionRotationAxis(XMLoadFloat4(&axis2), XMConvertToRadians(angle2));
-        XMVECTOR q3 = XMQuaternionRotationAxis(XMLoadFloat4(&axis3), XMConvertToRadians(angle3));
-        XMStoreFloat4(&skull_animation_.Keyframes[0].RotationQuat, q0);
-        XMStoreFloat4(&skull_animation_.Keyframes[1].RotationQuat, q1);
-        XMStoreFloat4(&skull_animation_.Keyframes[2].RotationQuat, q2);
-        XMStoreFloat4(&skull_animation_.Keyframes[3].RotationQuat, q3);
-        XMStoreFloat4(&skull_animation_.Keyframes[4].RotationQuat, q0);
-}
-#endif // 0
+    ImGui::Combo(
+        "Skybox Texture", &imgui_params_.selected_mat,
+        "   Grass Cube\0   Desert Cube\0   Snow Cube\0   Sunset Cube\0\0");
 
     ImGui::Separator();
     ImGui::Checkbox("Camera Mouse Movement", &mouse_active_);
@@ -419,6 +369,16 @@ void SkinnedMeshDemo::ImGuiUpdate () {
 
     ImGui::End();
     ImGui::Render();
+
+    // choose skybox texture
+    if (0 == imgui_params_.selected_mat)
+        sky_tex_heap_index_ = SkinnedDiffusedAndNormalTextureCount;
+    else if (1 == imgui_params_.selected_mat)
+        sky_tex_heap_index_ = SkinnedDiffusedAndNormalTextureCount + 1;
+    else if (2 == imgui_params_.selected_mat)
+        sky_tex_heap_index_ = SkinnedDiffusedAndNormalTextureCount + 2;
+    else if (3 == imgui_params_.selected_mat)
+        sky_tex_heap_index_ = SkinnedDiffusedAndNormalTextureCount + 3;
 
     // control mouse activation
     //mouse_active_ = !(imgui_params_.beginwnd || imgui_params_.anim_widgets);
@@ -454,7 +414,8 @@ void SkinnedMeshDemo::OnResize () {
 
 void SkinnedMeshDemo::Update (GameTimer const & gt) {
 
-    ImGuiUpdate();
+    if (EnableImGui)
+        ImGuiUpdate();
 
     OnKeyboardInput(gt);
 
@@ -612,11 +573,17 @@ void SkinnedMeshDemo::Draw (GameTimer const & gt) {
     auto mat_buffer = curr_frame_resource_->MatBuffer->GetResource();
     cmdlist_->SetGraphicsRootShaderResourceView(3, mat_buffer->GetGPUVirtualAddress());
 
-    // -- bind the null srv for shadow pass
+    // -- bind the null srv for shadow pass sky map
     cmdlist_->SetGraphicsRootDescriptorTable(4, hgpu_null_srv_);
 
-    // -- bind all textures
-    cmdlist_->SetGraphicsRootDescriptorTable(5, srv_descriptor_heap_->GetGPUDescriptorHandleForHeapStart());
+    // -- bind the null srv for shadow pass smap_srv (N.B., smap_srv is just used for sampling in Main Pass)
+    cmdlist_->SetGraphicsRootDescriptorTable(5, hgpu_null_srv_);
+
+    // -- bind the null srv for ssao map (not needed)
+    cmdlist_->SetGraphicsRootDescriptorTable(6, hgpu_null_srv_);
+
+    // -- bind all the rest of textures
+    cmdlist_->SetGraphicsRootDescriptorTable(7, srv_descriptor_heap_->GetGPUDescriptorHandleForHeapStart());
 
     DrawSceneToShadowMap();
 
@@ -638,12 +605,6 @@ void SkinnedMeshDemo::Draw (GameTimer const & gt) {
     //
 
     cmdlist_->SetGraphicsRootSignature(root_sig_.Get());
-    //
-    // NOTE(omid): rebind state whenever graphics root sig changes:
-
-    // -- bind all materials: for structured buffer we can by pass specifying heap and just set a root descriptor
-    mat_buffer = curr_frame_resource_->MatBuffer->GetResource();
-    cmdlist_->SetGraphicsRootShaderResourceView(3, mat_buffer->GetGPUVirtualAddress());
 
     cmdlist_->RSSetViewports(1, &screen_viewport_);
     cmdlist_->RSSetScissorRects(1, &scissor_rect_);
@@ -662,17 +623,33 @@ void SkinnedMeshDemo::Draw (GameTimer const & gt) {
     // -- specify the buffers we are going to render to
     cmdlist_->OMSetRenderTargets(1, &GetCurrBackbufferView(), true, &GetDepthStencilView());
 
-    // -- [re]bind all the textures
-    cmdlist_->SetGraphicsRootDescriptorTable(5, srv_descriptor_heap_->GetGPUDescriptorHandleForHeapStart());
+    // NOTE(omid): rebind state whenever graphics root sig changes:
 
     // -- bind constant buffer for the pass
     auto pass_cb = curr_frame_resource_->PassCB->GetResource();
     cmdlist_->SetGraphicsRootConstantBufferView(2, pass_cb->GetGPUVirtualAddress());
 
-    // -- bind sky cubemap (here we have one but for multiple we could index dynamically into array of cubemaps or go per obj...)
+    // -- [re]bind all materials: for structured buffer we can by pass specifying heap and just set a root descriptor
+    mat_buffer = curr_frame_resource_->MatBuffer->GetResource();
+    cmdlist_->SetGraphicsRootShaderResourceView(3, mat_buffer->GetGPUVirtualAddress());
+
+    // -- bind sky cubemap
     CD3DX12_GPU_DESCRIPTOR_HANDLE sky_tex_descriptor(srv_descriptor_heap_->GetGPUDescriptorHandleForHeapStart());
     sky_tex_descriptor.Offset(sky_tex_heap_index_, cbv_srv_uav_descriptor_size_);
     cmdlist_->SetGraphicsRootDescriptorTable(4, sky_tex_descriptor);
+
+    // -- bind shadow map
+    CD3DX12_GPU_DESCRIPTOR_HANDLE smap_descriptor(srv_descriptor_heap_->GetGPUDescriptorHandleForHeapStart());
+    smap_descriptor.Offset(shadow_map_heap_index_, cbv_srv_uav_descriptor_size_);
+    cmdlist_->SetGraphicsRootDescriptorTable(5, smap_descriptor);
+
+    // -- bind ssao map
+    CD3DX12_GPU_DESCRIPTOR_HANDLE ssao_descriptor(srv_descriptor_heap_->GetGPUDescriptorHandleForHeapStart());
+    ssao_descriptor.Offset(ssao_heap_index_start_, cbv_srv_uav_descriptor_size_);
+    cmdlist_->SetGraphicsRootDescriptorTable(6, ssao_descriptor);
+
+    // -- [re]bind all the rest of textures
+    cmdlist_->SetGraphicsRootDescriptorTable(7, srv_descriptor_heap_->GetGPUDescriptorHandleForHeapStart());
 
     cmdlist_->SetPipelineState(psos_["Opaque"].Get());
     DrawRenderItems(cmdlist_.Get(), render_layers_[(int)RenderLayer::Opaque]);
@@ -688,7 +665,8 @@ void SkinnedMeshDemo::Draw (GameTimer const & gt) {
 
     //
     // -- imgui draw call
-    ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), cmdlist_.Get());
+    if (EnableImGui)
+        ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), cmdlist_.Get());
 
     //
     cmdlist_->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
@@ -1332,7 +1310,10 @@ void SkinnedMeshDemo::LoadTextures () {
         "TileNormalMap",
         "DefaultDiffuseMap",
         "DefaultNormalMap",
-        "SkyCubeMap"
+        "SkyCubeMap1",
+        "SkyCubeMap2",
+        "SkyCubeMap3",
+        "SkyCubeMap4",
     };
     std::vector<std::wstring> tex_filenames = {
         L"../textures/bricks2.dds",
@@ -1341,7 +1322,10 @@ void SkinnedMeshDemo::LoadTextures () {
         L"../textures/tile_nmap.dds",
         L"../textures/white1x1.dds",
         L"../textures/default_nmap.dds",
+        L"../textures/grasscube1024.dds",
         L"../textures/desertcube1024.dds",
+        L"../textures/snowcube1024.dds",
+        L"../textures/sunsetcube1024.dds",
     };
     // -- add skinned model textures to list so we can reference by name later
     for (UINT i = 0; i < skinned_mats_.size(); ++i) {
@@ -1406,7 +1390,7 @@ void SkinnedMeshDemo::BuildDescriptorHeaps () {
     assert(cbv_srv_uav_descriptor_size_ > 0);
 
     D3D12_DESCRIPTOR_HEAP_DESC srv_heap_desc = {};
-    srv_heap_desc.NumDescriptors = DescriptorCount + 1 /* DearImGui */;
+    srv_heap_desc.NumDescriptors = TotalDescriptorCount + 1 /* DearImGui */;
     srv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     srv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     THROW_IF_FAILED(device_->CreateDescriptorHeap(&srv_heap_desc, IID_PPV_ARGS(&srv_descriptor_heap_)));
@@ -1421,6 +1405,7 @@ void SkinnedMeshDemo::BuildDescriptorHeaps () {
         textures_["DefaultDiffuseMap"]->Resource,
         textures_["DefaultNormalMap"]->Resource
     };
+    assert(tex_list.size() == DiffuseAndNormalTextureCount);
 
     skinned_srv_heap_start_index_ = (UINT)tex_list.size();
 
@@ -1429,8 +1414,6 @@ void SkinnedMeshDemo::BuildDescriptorHeaps () {
         assert(tex_resource != nullptr);
         tex_list.push_back(tex_resource);
     }
-
-    auto sky_cubemap = textures_["SkyCubeMap"]->Resource;
 
     D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
     srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -1446,15 +1429,44 @@ void SkinnedMeshDemo::BuildDescriptorHeaps () {
         hcpu_descriptor.Offset(1, cbv_srv_uav_descriptor_size_);
     }
 
+    SkinnedDiffusedAndNormalTextureCount = (UINT)tex_list.size();
+
+    //
+    // -- create descriptors for the sky cube maps
+    //
+    auto sky_cubemap1 = textures_["SkyCubeMap1"]->Resource;
+    auto sky_cubemap2 = textures_["SkyCubeMap2"]->Resource;
+    auto sky_cubemap3 = textures_["SkyCubeMap3"]->Resource;
+    auto sky_cubemap4 = textures_["SkyCubeMap4"]->Resource;
+
     srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
     srv_desc.TextureCube.MostDetailedMip = 0;
-    srv_desc.TextureCube.MipLevels = sky_cubemap->GetDesc().MipLevels;
+    srv_desc.TextureCube.MipLevels = sky_cubemap1->GetDesc().MipLevels;
     srv_desc.TextureCube.ResourceMinLODClamp = 0.0f;
-    srv_desc.Format = sky_cubemap->GetDesc().Format;
-    device_->CreateShaderResourceView(sky_cubemap.Get(), &srv_desc, hcpu_descriptor);
+    srv_desc.Format = sky_cubemap1->GetDesc().Format;
+    device_->CreateShaderResourceView(sky_cubemap1.Get(), &srv_desc, hcpu_descriptor);
+    hcpu_descriptor.Offset(1, cbv_srv_uav_descriptor_size_);
 
-    sky_tex_heap_index_ = (UINT)tex_list.size();
-    shadow_map_heap_index_ = sky_tex_heap_index_ + 1;
+    srv_desc.TextureCube.MipLevels = sky_cubemap2->GetDesc().MipLevels;
+    srv_desc.Format = sky_cubemap2->GetDesc().Format;
+    device_->CreateShaderResourceView(sky_cubemap2.Get(), &srv_desc, hcpu_descriptor);
+    hcpu_descriptor.Offset(1, cbv_srv_uav_descriptor_size_);
+
+    srv_desc.TextureCube.MipLevels = sky_cubemap3->GetDesc().MipLevels;
+    srv_desc.Format = sky_cubemap3->GetDesc().Format;
+    device_->CreateShaderResourceView(sky_cubemap3.Get(), &srv_desc, hcpu_descriptor);
+    hcpu_descriptor.Offset(1, cbv_srv_uav_descriptor_size_);
+
+    srv_desc.TextureCube.MipLevels = sky_cubemap4->GetDesc().MipLevels;
+    srv_desc.Format = sky_cubemap4->GetDesc().Format;
+    device_->CreateShaderResourceView(sky_cubemap4.Get(), &srv_desc, hcpu_descriptor);
+    hcpu_descriptor.Offset(1, cbv_srv_uav_descriptor_size_);
+
+    sky_tex_heap_index_ = SkinnedDiffusedAndNormalTextureCount;
+    //
+    // -- shadow map and ssao heap indices setup
+    //
+    shadow_map_heap_index_ = sky_tex_heap_index_ + SkyCubeMapCount /* desert, snow, grass, sunset*/;
     ssao_heap_index_start_ = shadow_map_heap_index_ + 1;
     ssao_ambient_map_index_ = ssao_heap_index_start_ + 3;
     null_cube_srv_index = ssao_heap_index_start_ + 5;
@@ -1564,16 +1576,21 @@ SkinnedMeshDemo::GetStaticSamplers() {
     };
 }
 void SkinnedMeshDemo::BuildRootSignature () {
-    UINT const num_special_maps = 3;    // cubemap(t0), smap(t1), and SSAO map(t2)
     UINT const num_tex_maps = 48;   // other texture maps (t3, ...)
 
     CD3DX12_DESCRIPTOR_RANGE tex_table0;
-    tex_table0.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, num_special_maps, 0, 0);  // (t0, space0) textures
+    tex_table0.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0);  // (t0, space0) sky cube map
 
     CD3DX12_DESCRIPTOR_RANGE tex_table1;
-    tex_table1.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, num_tex_maps, 3, 0);  // (t3, space0) textures
+    tex_table1.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1, 0);  // (t1, space0) shadow map
 
-    CD3DX12_ROOT_PARAMETER slot_root_params[6];
+    CD3DX12_DESCRIPTOR_RANGE tex_table2;
+    tex_table2.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 2, 0);  // (t2, space0) SSAO map
+
+    CD3DX12_DESCRIPTOR_RANGE tex_table3;
+    tex_table3.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, num_tex_maps, 3, 0);  // (t3, space0) rest of textures
+
+    CD3DX12_ROOT_PARAMETER slot_root_params[8];
     // -- ordererd from most frequent to least
     slot_root_params[0].InitAsConstantBufferView(0);    // (b0) obj cb
     slot_root_params[1].InitAsConstantBufferView(1);    // (b1) skinned cb
@@ -1581,6 +1598,8 @@ void SkinnedMeshDemo::BuildRootSignature () {
     slot_root_params[3].InitAsShaderResourceView(0, 1); // (t0, space1) mat buffer
     slot_root_params[4].InitAsDescriptorTable(1, &tex_table0, D3D12_SHADER_VISIBILITY_PIXEL);
     slot_root_params[5].InitAsDescriptorTable(1, &tex_table1, D3D12_SHADER_VISIBILITY_PIXEL);
+    slot_root_params[6].InitAsDescriptorTable(1, &tex_table2, D3D12_SHADER_VISIBILITY_PIXEL);
+    slot_root_params[7].InitAsDescriptorTable(1, &tex_table3, D3D12_SHADER_VISIBILITY_PIXEL);
 
     auto static_samplers = GetStaticSamplers();
 
@@ -1863,7 +1882,7 @@ void SkinnedMeshDemo::BuildPSOs () {
     sky_pso_desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE; // camera is inside the sky sphere so turn of culling
     // NOTE(omid): make sure the depth func is less-equal and not just less, 
     // otherwise normalized depth values at z=1 (NDC) will fail depth test if dep buffer was cleared to 1
-    sky_pso_desc.DepthStencilState.DepthEnable = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+    sky_pso_desc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
     sky_pso_desc.pRootSignature = root_sig_.Get();
     sky_pso_desc.VS.pShaderBytecode = shaders_["SkyVS"]->GetBufferPointer();
     sky_pso_desc.VS.BytecodeLength = shaders_["SkyVS"]->GetBufferSize();
