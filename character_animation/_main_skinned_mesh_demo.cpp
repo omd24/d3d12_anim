@@ -153,7 +153,9 @@ private:
     POINT last_mouse_pos_;
     bool mouse_active_ = true;
 
-public: // -- helper getters
+public: // -- helpers
+    static constexpr int DescriptorCount = 64;
+
     ID3D12DescriptorHeap * GetSrvHeap () { return srv_descriptor_heap_.Get(); }
     UINT GetCbvSrvUavDescriptorSize () { return cbv_srv_uav_descriptor_size_; }
     ID3D12Device * GetDevice () { return device_.Get(); }
@@ -245,7 +247,7 @@ SkinnedMeshDemo::~SkinnedMeshDemo () {
         FlushCmdQueue();
 
     // -- cleanup imgui
-        ImGuiDeinit();
+    ImGuiDeinit();
 }
 bool SkinnedMeshDemo::Init () {
     if (!D3DApp::Init())
@@ -307,12 +309,12 @@ void SkinnedMeshDemo::ImGuiInit () {
     // calculate imgui cpu & gpu handles on location on srv_heap
     D3D12_CPU_DESCRIPTOR_HANDLE imgui_cpu_handle = GetSrvHeap()->GetCPUDescriptorHandleForHeapStart();
     imgui_cpu_handle.ptr += ((size_t)GetCbvSrvUavDescriptorSize() * (
-        +5 /* number of textures */
+        + DescriptorCount /* number of textures */
         ));
 
     D3D12_GPU_DESCRIPTOR_HANDLE imgui_gpu_handle = GetSrvHeap()->GetGPUDescriptorHandleForHeapStart();
     imgui_gpu_handle.ptr += ((size_t)GetCbvSrvUavDescriptorSize() * (
-        +5 /* number of textures */
+        + DescriptorCount /* number of textures */
         ));
 
     // Setup Platform/Renderer backends
@@ -788,6 +790,8 @@ void SkinnedMeshDemo::UpdateMaterialBuffer (GameTimer const & gt) {
             mat_data.Roughness = mat->Roughness;
             XMStoreFloat4x4(&mat_data.MatTransform, XMMatrixTranspose(mat_transform));
             mat_data.DiffuseMapIndex = mat->DiffuseSrvHeapIndex;
+            mat_data.NormalMapIndex = mat->NormalSrvHeapIndex;
+
             curr_mat_buf->CopyData(mat->MatBufferIndex, mat_data);
             mat->NumFramesDirty--;
         }
@@ -1080,7 +1084,7 @@ void SkinnedMeshDemo::BuildMaterials () {
     tile0->Name = "Tile0";
     tile0->MatBufferIndex = 1;
     tile0->DiffuseSrvHeapIndex = 2;
-    tile0->DiffuseSrvHeapIndex = 3;
+    tile0->NormalSrvHeapIndex = 3;
     tile0->DiffuseAlbedo = XMFLOAT4(0.9f, 0.9f, 0.9f, 1.0f);
     tile0->FresnelR0 = XMFLOAT3(0.2f, 0.2f, 0.2f);
     tile0->Roughness = 0.1f;
@@ -1089,7 +1093,7 @@ void SkinnedMeshDemo::BuildMaterials () {
     mirror0->Name = "Mirror0";
     mirror0->MatBufferIndex = 2;
     mirror0->DiffuseSrvHeapIndex = 4;
-    mirror0->DiffuseSrvHeapIndex = 5;
+    mirror0->NormalSrvHeapIndex = 5;
     mirror0->DiffuseAlbedo = XMFLOAT4(0.0f, 0.0f, 0.0f, 1.0f);
     mirror0->FresnelR0 = XMFLOAT3(0.95f, 0.95f, 0.95f);
     mirror0->Roughness = 0.1f;
@@ -1098,7 +1102,7 @@ void SkinnedMeshDemo::BuildMaterials () {
     sky->Name = "Sky";
     sky->MatBufferIndex = 3;
     sky->DiffuseSrvHeapIndex = 6;
-    sky->DiffuseSrvHeapIndex = 7;
+    sky->NormalSrvHeapIndex = 7;
     sky->DiffuseAlbedo = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
     sky->FresnelR0 = XMFLOAT3(0.1f, 0.1f, 0.1f);
     sky->Roughness = 1.0f;
@@ -1401,10 +1405,8 @@ CD3DX12_CPU_DESCRIPTOR_HANDLE SkinnedMeshDemo::GetHCpuRtv (int index) const {
 void SkinnedMeshDemo::BuildDescriptorHeaps () {
     assert(cbv_srv_uav_descriptor_size_ > 0);
 
-    UINT const num_descriptors = 64;
-
     D3D12_DESCRIPTOR_HEAP_DESC srv_heap_desc = {};
-    srv_heap_desc.NumDescriptors = num_descriptors + 1 /* DearImGui */;
+    srv_heap_desc.NumDescriptors = DescriptorCount + 1 /* DearImGui */;
     srv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     srv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     THROW_IF_FAILED(device_->CreateDescriptorHeap(&srv_heap_desc, IID_PPV_ARGS(&srv_descriptor_heap_)));
