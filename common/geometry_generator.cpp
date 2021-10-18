@@ -436,7 +436,7 @@ GeometryGenerator::MeshData GeometryGenerator::CreateQuad (
         x + w, y - h, depth,
         0.0f, 0.0f, -1.0f,
         1.0f, 0.0f, 0.0f,
-        1.0f, 0.0f
+        1.0f, 1.0f
     );
 
     mesh_data.Indices32[0] = 0;

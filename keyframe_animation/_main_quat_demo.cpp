@@ -933,7 +933,7 @@ void QuatApp::LoadTextures () {
     textures_[deftex->Name] = std::move(deftex);
 }
 void QuatApp::BuildDescriptorHeaps () {
-    assert(cbv_srv_descriptor_size_ > 0);
+    assert(cbv_srv_uav_descriptor_size_ > 0);
 
     UINT const num_descriptors = 5;
 

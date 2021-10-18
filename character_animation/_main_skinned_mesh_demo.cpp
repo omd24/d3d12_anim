@@ -329,7 +329,7 @@ void SkinnedMeshDemo::ImGuiInit () {
     // Setup imgui window flags
     imgui_params_.window_flags |= ImGuiWindowFlags_NoScrollbar;
     imgui_params_.window_flags |= ImGuiWindowFlags_MenuBar;
-    imgui_params_.window_flags |= ImGuiWindowFlags_NoMove;
+    //imgui_params_.window_flags |= ImGuiWindowFlags_NoMove;
     imgui_params_.window_flags |= ImGuiWindowFlags_NoCollapse;
     imgui_params_.window_flags |= ImGuiWindowFlags_NoNav;
     imgui_params_.window_flags |= ImGuiWindowFlags_NoBringToFrontOnFocus;
