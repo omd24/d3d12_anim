@@ -68,6 +68,8 @@ cbuffer PerPassCB : register(b2) {
     float4 g_ambient_light;
 
     Light g_lights[MAX_LIGHTS];
+
+    bool dir_light_flag;
 }
 //
 // -- transform a normal map sample to world space

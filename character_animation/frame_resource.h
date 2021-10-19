@@ -36,6 +36,9 @@ struct PassConstants {
     DirectX::XMFLOAT4 AmbientLight = {0.0f, 0.0f, 0.0f, 1.0f};
 
     Light Lights[MAX_LIGHTS];
+
+    // ui customization paramter(s)
+    UINT dir_light_flag;
 };
 struct SSAOConstants {
     DirectX::XMFLOAT4X4 Proj;

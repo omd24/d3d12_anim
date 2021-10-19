@@ -124,11 +124,13 @@ float4 PS (VertexOut pin) : SV_TARGET {
 
     float shininess = (1.0f - roughness) * nmap_sample.a;
     Material mat = {diffuse_albedo, fresnelr0, shininess};
-    float4 direct_light = ComputeLighting(
-        g_lights, mat, pin.PosW, bumped_normal_world,
-        to_eye_world, shadow_factor
-    );
 
+    float4 direct_light = float4(0.0f, 0.0f, 0.0f, 0.0f);
+    if (dir_light_flag)
+        direct_light = ComputeLighting(
+            g_lights, mat, pin.PosW, bumped_normal_world,
+            to_eye_world, shadow_factor
+        );
     float4 lit_color = ambient + direct_light;
 
     // -- add specular reflections:

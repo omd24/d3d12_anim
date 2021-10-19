@@ -77,7 +77,8 @@ struct RenderItem {
 enum class RenderLayer : int {
     Opaque = 0,
     SkinnedOpaque,
-    Debug,
+    DebugShadowMap,
+    DebugSSAO,
     Sky,
 
     COUNT_
@@ -169,6 +170,11 @@ public: // -- helpers
         ImGuiWindowFlags window_flags;
         bool beginwnd, anim_widgets;
         int selected_mat = 0;
+        bool ssao_enabled = true;
+        bool dir_light_enabled = true;
+        bool show_smap_debug = false;
+        bool show_ssao_debug = false;
+
         bool initialized = false;
     } imgui_params_ = {};
 
@@ -361,10 +367,17 @@ void SkinnedMeshDemo::ImGuiUpdate () {
         "   Grass Cube\0   Desert Cube\0   Snow Cube\0   Sunset Cube\0\0");
 
     ImGui::Separator();
-    ImGui::Checkbox("Camera Mouse Movement", &mouse_active_);
+    ImGui::Checkbox("Enable SSAO", &imgui_params_.ssao_enabled);
 
-    ImGui::Text("\n");
     ImGui::Separator();
+    ImGui::Checkbox("Enable Directional Lights", &imgui_params_.dir_light_enabled);
+
+    ImGui::Separator();
+    ImGui::Checkbox("Show Shadow Mapping Debug Window", &imgui_params_.show_smap_debug);
+    ImGui::Checkbox("Show SSAO Debug Window", &imgui_params_.show_ssao_debug);
+
+    ImGui::Separator();
+    ImGui::Checkbox("Camera Mouse Movement", &mouse_active_);
     ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
 
     ImGui::End();
@@ -657,8 +670,14 @@ void SkinnedMeshDemo::Draw (GameTimer const & gt) {
     cmdlist_->SetPipelineState(psos_["SkinnedOpaque"].Get());
     DrawRenderItems(cmdlist_.Get(), render_layers_[(int)RenderLayer::SkinnedOpaque]);
 
-    cmdlist_->SetPipelineState(psos_["Debug"].Get());
-    DrawRenderItems(cmdlist_.Get(), render_layers_[(int)RenderLayer::Debug]);
+    if (imgui_params_.show_smap_debug) {
+        cmdlist_->SetPipelineState(psos_["ShadowMapDebug"].Get());
+        DrawRenderItems(cmdlist_.Get(), render_layers_[(int)RenderLayer::DebugShadowMap]);
+    }
+    if (imgui_params_.show_ssao_debug) {
+        cmdlist_->SetPipelineState(psos_["SSAODebug"].Get());
+        DrawRenderItems(cmdlist_.Get(), render_layers_[(int)RenderLayer::DebugSSAO]);
+    }
 
     cmdlist_->SetPipelineState(psos_["Sky"].Get());
     DrawRenderItems(cmdlist_.Get(), render_layers_[(int)RenderLayer::Sky]);
@@ -856,6 +875,13 @@ void SkinnedMeshDemo::UpdateMainPassCB (GameTimer const & gt) {
     main_pass_cb_.Lights[2].Direction = rotated_light_directions[2];
     main_pass_cb_.Lights[2].Strength = {0.2f, 0.2f, 0.2f};
 
+    //
+    // ui params (only directional light controls shadows)
+    if (imgui_params_.dir_light_enabled)
+        main_pass_cb_.dir_light_flag = 1;
+    else
+        main_pass_cb_.dir_light_flag = 0;
+
     auto curr_pass_cb = curr_frame_resource_->PassCB.get();
     curr_pass_cb->CopyData(0, main_pass_cb_);
 }
@@ -917,6 +943,10 @@ void SkinnedMeshDemo::UpdateSSAOCB (GameTimer const & gt) {
     ssao_cb.OcclusionFadeEnd = 2.0f;
     ssao_cb.SurfaceEpsilon = 0.05f;
 
+    // -- disable SSAO if needed
+    if (!imgui_params_.ssao_enabled)
+        ssao_cb.OcclusionRadius = 0.0f;
+
     auto curr_ssao_cb = curr_frame_resource_->SSAOCB.get();
     curr_ssao_cb->CopyData(0, ssao_cb);
 }
@@ -926,7 +956,7 @@ void SkinnedMeshDemo::BuildShapeGeometry () {
     auto grid = ggen.CreateGrid(20.0f, 30.0f, 60, 40);
     auto sphere = ggen.CreateSphere(0.5f, 20, 20);
     auto cylinder = ggen.CreateCylinder(0.5f, 0.3f, 3.0f, 20, 20);
-    auto quad = ggen.CreateQuad(0.0f, 0.0f, 1.0f, 1.0f, 0.0f);
+    auto quad = ggen.CreateQuad(0.5f, -0.5f, 0.5f, 0.5f, 0.0f);
 
     UINT box_vtx_offset = 0;
     UINT grid_vtx_offset = (UINT)box.Vertices.size();
@@ -1120,18 +1150,31 @@ void SkinnedMeshDemo::BuildRenderItems () {
     render_layers_[(int)RenderLayer::Sky].push_back(sky_ritem.get());
     all_ritems_.push_back(std::move(sky_ritem));
 
-    auto quad_ritem = std::make_unique<RenderItem>();
-    quad_ritem->World = MathHelper::Identity4x4();
-    quad_ritem->TexTransform = MathHelper::Identity4x4();
-    quad_ritem->ObjCBIndex = obj_index++;
-    quad_ritem->Mat = materials_["Brick0"].get();
-    quad_ritem->Geo = geometries_["ShapeGeo"].get();
-    quad_ritem->PrimitiveType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-    quad_ritem->IndexCount = quad_ritem->Geo->DrawArgs["Quad"].IndexCount;
-    quad_ritem->StartIndexLocation = quad_ritem->Geo->DrawArgs["Quad"].StartIndexLocation;
-    quad_ritem->BaseVertexLocation = quad_ritem->Geo->DrawArgs["Quad"].BaseVertexLocation;
-    render_layers_[(int)RenderLayer::Debug].push_back(quad_ritem.get());
-    all_ritems_.push_back(std::move(quad_ritem));
+    auto ssao_quad_ritem = std::make_unique<RenderItem>();
+    ssao_quad_ritem->World = MathHelper::Identity4x4();
+    ssao_quad_ritem->TexTransform = MathHelper::Identity4x4();
+    ssao_quad_ritem->ObjCBIndex = obj_index++;
+    ssao_quad_ritem->Mat = materials_["Brick0"].get();
+    ssao_quad_ritem->Geo = geometries_["ShapeGeo"].get();
+    ssao_quad_ritem->PrimitiveType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+    ssao_quad_ritem->IndexCount = ssao_quad_ritem->Geo->DrawArgs["Quad"].IndexCount;
+    ssao_quad_ritem->StartIndexLocation = ssao_quad_ritem->Geo->DrawArgs["Quad"].StartIndexLocation;
+    ssao_quad_ritem->BaseVertexLocation = ssao_quad_ritem->Geo->DrawArgs["Quad"].BaseVertexLocation;
+    render_layers_[(int)RenderLayer::DebugSSAO].push_back(ssao_quad_ritem.get());
+    all_ritems_.push_back(std::move(ssao_quad_ritem));
+
+    auto smap_quad_ritem = std::make_unique<RenderItem>();
+    XMStoreFloat4x4(&smap_quad_ritem->World, XMMatrixTranslation(0.0f, 0.75f, 0.0f));
+    smap_quad_ritem->TexTransform = MathHelper::Identity4x4();
+    smap_quad_ritem->ObjCBIndex = obj_index++;
+    smap_quad_ritem->Mat = materials_["Brick0"].get();
+    smap_quad_ritem->Geo = geometries_["ShapeGeo"].get();
+    smap_quad_ritem->PrimitiveType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+    smap_quad_ritem->IndexCount = smap_quad_ritem->Geo->DrawArgs["Quad"].IndexCount;
+    smap_quad_ritem->StartIndexLocation = smap_quad_ritem->Geo->DrawArgs["Quad"].StartIndexLocation;
+    smap_quad_ritem->BaseVertexLocation = smap_quad_ritem->Geo->DrawArgs["Quad"].BaseVertexLocation;
+    render_layers_[(int)RenderLayer::DebugShadowMap].push_back(smap_quad_ritem.get());
+    all_ritems_.push_back(std::move(smap_quad_ritem));
 
     auto box = std::make_unique<RenderItem>();
     XMStoreFloat4x4(&box->World, XMMatrixScaling(2.0f, 1.0f, 2.0f) * XMMatrixTranslation(0.0f, 0.5f, 0.0f));
@@ -1724,8 +1767,9 @@ void SkinnedMeshDemo::BuildShaderAndInputLayout () {
     shaders_["ShadowOpaquePS"] = D3DUtil::CompileShader(L"shaders\\shadows.hlsl", nullptr, "PS", "ps_5_1");
     shaders_["ShadowAlphatestedPS"] = D3DUtil::CompileShader(L"shaders\\shadows.hlsl", alphatest_defines, "PS", "ps_5_1");
 
-    shaders_["DebugVS"] = D3DUtil::CompileShader(L"shaders\\shadow_debug.hlsl", nullptr, "VS", "vs_5_1");
-    shaders_["DebugPS"] = D3DUtil::CompileShader(L"shaders\\shadow_debug.hlsl", nullptr, "PS", "ps_5_1");
+    shaders_["DebugVS"] = D3DUtil::CompileShader(L"shaders\\debug.hlsl", nullptr, "VS", "vs_5_1");
+    shaders_["SSAODebugPS"] = D3DUtil::CompileShader(L"shaders\\debug.hlsl", nullptr, "SSAODebugPS", "ps_5_1");
+    shaders_["SMapDebugPS"] = D3DUtil::CompileShader(L"shaders\\debug.hlsl", nullptr, "SMapDebugPS", "ps_5_1");
 
     shaders_["DrawNormalsVS"] = D3DUtil::CompileShader(L"shaders\\draw_normals.hlsl", nullptr, "VS", "vs_5_1");
     shaders_["SkinnedDrawNormalsVS"] = D3DUtil::CompileShader(L"shaders\\draw_normals.hlsl", skinned_defines, "VS", "vs_5_1");
@@ -1815,15 +1859,20 @@ void SkinnedMeshDemo::BuildPSOs () {
     skinned_smap_pso_desc.PS.BytecodeLength = shaders_["ShadowOpaquePS"]->GetBufferSize();
     THROW_IF_FAILED(device_->CreateGraphicsPipelineState(&skinned_smap_pso_desc, IID_PPV_ARGS(&psos_["SkinnedShadowOpaque"])));
     //
-    // -- debug layer PSO:
+    // -- debug layer PSOs:
     //
     D3D12_GRAPHICS_PIPELINE_STATE_DESC debug_pso_desc = opaque_pso_desc;
     debug_pso_desc.pRootSignature = root_sig_.Get();
     debug_pso_desc.VS.pShaderBytecode = shaders_["DebugVS"]->GetBufferPointer();
     debug_pso_desc.VS.BytecodeLength = shaders_["DebugVS"]->GetBufferSize();
-    debug_pso_desc.PS.pShaderBytecode = shaders_["DebugPS"]->GetBufferPointer();
-    debug_pso_desc.PS.BytecodeLength = shaders_["DebugPS"]->GetBufferSize();
-    THROW_IF_FAILED(device_->CreateGraphicsPipelineState(&debug_pso_desc, IID_PPV_ARGS(&psos_["Debug"])));
+    debug_pso_desc.PS.pShaderBytecode = shaders_["SMapDebugPS"]->GetBufferPointer();
+    debug_pso_desc.PS.BytecodeLength = shaders_["SMapDebugPS"]->GetBufferSize();
+    THROW_IF_FAILED(device_->CreateGraphicsPipelineState(&debug_pso_desc, IID_PPV_ARGS(&psos_["ShadowMapDebug"])));
+    debug_pso_desc.VS.pShaderBytecode = shaders_["DebugVS"]->GetBufferPointer();
+    debug_pso_desc.VS.BytecodeLength = shaders_["DebugVS"]->GetBufferSize();
+    debug_pso_desc.PS.pShaderBytecode = shaders_["SSAODebugPS"]->GetBufferPointer();
+    debug_pso_desc.PS.BytecodeLength = shaders_["SSAODebugPS"]->GetBufferSize();
+    THROW_IF_FAILED(device_->CreateGraphicsPipelineState(&debug_pso_desc, IID_PPV_ARGS(&psos_["SSAODebug"])));
     //
     // -- PSO for drawing normals:
     //
