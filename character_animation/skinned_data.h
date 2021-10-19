@@ -62,4 +62,6 @@ public:
         float time_point,
         std::vector<DirectX::XMFLOAT4X4> & fianl_transforms
     ) const;
+
+    std::vector<int> GetBoneHierarchy () const { return bone_hierarchy_; }
 };

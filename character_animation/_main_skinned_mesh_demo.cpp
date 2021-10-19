@@ -152,7 +152,6 @@ private:
     XMFLOAT3 rotated_light_directions[3];
 
     POINT last_mouse_pos_;
-    bool mouse_active_ = true;
 
 public: // -- helpers
     static constexpr int TotalDescriptorCount = 64;
@@ -174,6 +173,9 @@ public: // -- helpers
         bool dir_light_enabled = true;
         bool show_smap_debug = false;
         bool show_ssao_debug = false;
+        bool mouse_active_ = false;
+
+        std::vector<int> bone_hierarchy;
 
         bool initialized = false;
     } imgui_params_ = {};
@@ -339,10 +341,10 @@ void SkinnedMeshDemo::ImGuiInit () {
     );
 
     // Setup imgui window flags
-    imgui_params_.window_flags |= ImGuiWindowFlags_NoScrollbar;
-    imgui_params_.window_flags |= ImGuiWindowFlags_MenuBar;
+    //imgui_params_.window_flags |= ImGuiWindowFlags_NoScrollbar;
+    //imgui_params_.window_flags |= ImGuiWindowFlags_MenuBar;
     //imgui_params_.window_flags |= ImGuiWindowFlags_NoMove;
-    imgui_params_.window_flags |= ImGuiWindowFlags_NoCollapse;
+    //imgui_params_.window_flags |= ImGuiWindowFlags_NoCollapse;
     imgui_params_.window_flags |= ImGuiWindowFlags_NoNav;
     imgui_params_.window_flags |= ImGuiWindowFlags_NoBringToFrontOnFocus;
     //imgui_params_.window_flags |= ImGuiWindowFlags_NoResize;
@@ -354,6 +356,19 @@ void SkinnedMeshDemo::ImGuiDeinit () {
     ImGui_ImplWin32_Shutdown();
     if (imgui_params_.initialized)
         ImGui::DestroyContext();
+}
+static void
+print_children (std::vector<int> bh, int curr_i, int pid) {
+    for (int i = curr_i; i < bh.size(); ++i) {
+        int parent_id = bh[i];
+        if (parent_id == pid) {
+            std::string node_str = "Bone" + std::to_string(i);
+            if (ImGui::TreeNode(node_str.c_str())) {
+                print_children(bh, i + 1, i);   // hierarchy is sorted
+                ImGui::TreePop();
+            }
+        }
+    }
 }
 void SkinnedMeshDemo::ImGuiUpdate () {
     ImGui_ImplDX12_NewFrame();
@@ -377,7 +392,16 @@ void SkinnedMeshDemo::ImGuiUpdate () {
     ImGui::Checkbox("Show SSAO Debug Window", &imgui_params_.show_ssao_debug);
 
     ImGui::Separator();
-    ImGui::Checkbox("Camera Mouse Movement", &mouse_active_);
+    if (ImGui::CollapsingHeader("Bone Hierarchy")) {
+        if (ImGui::TreeNode("Bone0")) {
+            auto bh = imgui_params_.bone_hierarchy;
+            print_children(bh, 1, 0);
+            ImGui::TreePop();
+        }
+    }
+
+    ImGui::Separator();
+    ImGui::Checkbox("Camera Mouse Movement", &imgui_params_.mouse_active_);
     ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
 
     ImGui::End();
@@ -394,7 +418,7 @@ void SkinnedMeshDemo::ImGuiUpdate () {
         sky_tex_heap_index_ = SkinnedDiffusedAndNormalTextureCount + 3;
 
     // control mouse activation
-    //mouse_active_ = !(imgui_params_.beginwnd || imgui_params_.anim_widgets);
+    //imgui_params_.mouse_active_ = !(imgui_params_.beginwnd || imgui_params_.anim_widgets);
 }
 void SkinnedMeshDemo::BuildRtvAndDsvDescriptorHeaps () {
     // -- add +1 for screen normal map, +2 for ambient maps
@@ -715,7 +739,7 @@ void SkinnedMeshDemo::OnMouseUp (WPARAM btn_state, int x, int y) {
     ReleaseCapture();
 }
 void SkinnedMeshDemo::OnMouseMove (WPARAM btn_state, int x, int y) {
-    if (mouse_active_) {
+    if (imgui_params_.mouse_active_) {
         if ((btn_state & MK_LBUTTON) != 0) {
             // -- assume each pixel corresponds to 0.25 a degree
             float dx = XMConvertToRadians(0.25f * static_cast<float>(x - last_mouse_pos_.x));
@@ -1344,6 +1368,10 @@ void SkinnedMeshDemo::LoadSkinnedModel () {
         geo->DrawArgs[name] = submesh;
     }
     geometries_[geo->Name] = std::move(geo);
+
+    //
+    // -- store bone hierarchy for visualization
+    imgui_params_.bone_hierarchy = skinned_info_.GetBoneHierarchy();
 }
 void SkinnedMeshDemo::LoadTextures () {
     std::vector<std::string> tex_names = {
